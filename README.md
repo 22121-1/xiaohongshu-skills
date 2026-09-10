@@ -165,6 +165,10 @@ python scripts/cli.py send-direct-message \
 
 详细流程见 [xhs-interact](skills/xhs-interact/SKILL.md#发送文字私信)。
 
+## 日常管理扩展
+
+业务命令及使用范围随对应模块维护：[社交互动](skills/xhs-interact/SKILL.md)、[内容发布与管理](skills/xhs-publish/SKILL.md)、[内容发现与导出](skills/xhs-explore/SKILL.md)。具体可用能力以当前版本各模块的命令表为准。
+
 ## CLI 命令参考
 
 | 子命令 | 说明 |

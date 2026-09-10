@@ -42,6 +42,8 @@ metadata:
 4. **社交互动**（"评论 / 回复 / 点赞 / 收藏 / 发私信"）→ 执行 `xhs-interact` 技能。
 5. **复合运营**（"竞品分析 / 热点追踪 / 批量互动 / 一键创作"）→ 执行 `xhs-content-ops` 技能。
 
+管理与读取需求也按子技能的说明路由：私信、通知和关注归 `xhs-interact`，笔记状态与草稿归 `xhs-publish`，个人内容库、链接与导出归 `xhs-explore`。可用命令以当前检出版本的子技能说明和 CLI 帮助为准。
+
 ## 全局约束
 
 - 所有操作前应确认登录状态（通过 `check-login`）。
@@ -107,8 +109,7 @@ metadata:
 ## 快速开始
 
 ```bash
-# 1. 启动 Chrome
-python scripts/chrome_launcher.py
+# 1. 确认 Chrome 已打开并启用 XHS Bridge 扩展
 
 # 2. 检查登录状态
 python scripts/cli.py check-login
@@ -143,6 +144,6 @@ python scripts/cli.py like-feed \
 ## 失败处理
 
 - **未登录**：提示用户执行登录流程（xhs-auth）。
-- **Chrome 未启动**：使用 `chrome_launcher.py` 启动浏览器。
+- **Chrome 未启动**：打开 Chrome 并确认 XHS Bridge 扩展已启用，再运行 `check-login`。
 - **操作超时**：检查网络连接，适当增加等待时间。
 - **频率限制**：降低操作频率，增大间隔。
