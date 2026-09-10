@@ -159,3 +159,22 @@ test('relationships: disabled control does not click', () => {
         desired_state: 'followed'}).error, /不可用/);
     assert.equal(f.button.clicks, undefined);
 });
+
+test('notifications: deleted content stays visible as a record but is not actionable', () => {
+    const m = {id:'n',type:'comment/item',userInfo:{userid:'u',nickname:'name'},
+        commentInfo:{id:'c',content:'deleted',liked:true,illegalInfo:{illegalStatus:'DELETED'}},
+        itemInfo:{id:'n',type:'note_info',illegalInfo:{illegalStatus:'NORMAL'}}};
+    const item = notifications({group:{messageList:[m]}}).run().items[0];
+    assert.equal(item.comment_status, 'DELETED');assert.equal(item.content_available,false);
+    assert.equal(item.can_reply,false);assert.equal(item.liked,true);
+});
+test('notifications: missing availability does not imply content is normal', () => {
+    const item = notifications({group:{messageList:[{id:'n',commentInfo:{id:'c'}}]}}).run().items[0];
+    assert.equal(item.comment_status,'UNKNOWN');assert.equal(item.content_available,null);
+    assert.equal(item.can_reply,null);assert.equal(item.liked,null);
+});
+test('notifications: unavailable attached note overrides normal board status', () => {
+    const item = notifications({group:{messageList:[{id:'n',itemInfo:{id:'board',type:'board_info',
+        illegalInfo:{illegalStatus:'NORMAL'},attachItemInfo:{id:'note',type:'note_info',illegalInfo:{illegalStatus:'HIDDEN'}}}}]}}).run().items[0];
+    assert.equal(item.content_available,false);assert.equal(item.attached_target_status,'HIDDEN');
+});
