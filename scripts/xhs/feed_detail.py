@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import random
@@ -39,6 +40,7 @@ from .selectors import (
 from .types import (
     CommentList,
     CommentLoadConfig,
+    CommentPagination,
     FeedDetail,
     FeedDetailResponse,
 )
@@ -94,8 +96,7 @@ def get_feed_detail(
         PageNotAccessibleError: 页面不可访问。
         NoFeedDetailError: 未获取到详情数据。
     """
-    if config is None:
-        config = CommentLoadConfig()
+    config = (config or CommentLoadConfig()).normalized()
 
     url = make_feed_detail_url(feed_id, xsec_token)
     logger.info("打开 feed 详情页: %s", url)
@@ -129,22 +130,27 @@ def get_feed_detail(
     sleep_random(800, 1500)
 
     # 模拟阅读鼠标轨迹（同步进行，增加行为真实性）
-    try:
+    with contextlib.suppress(Exception):
         page.simulate_reading_mouse(random.randint(2000, 4000))
-    except Exception:
-        pass
 
     # 检查页面可访问性（扫码验证时自动等待重试）
     _check_page_accessible(page, url, keyword)
 
     # 加载全部评论
+    stopped_reason = "not_requested"
     if load_all_comments:
         try:
-            _load_all_comments(page, config)
+            stopped_reason = _load_all_comments(page, config)
         except Exception as e:
             logger.warning("加载全部评论失败: %s", e)
+            stopped_reason = "load_error"
 
-    return _extract_feed_detail(page, feed_id)
+    return _extract_feed_detail(
+        page,
+        feed_id,
+        comment_limit=config.max_comment_items,
+        stopped_reason=stopped_reason,
+    )
 
 
 # ========== 页面检查 ==========
@@ -260,7 +266,13 @@ _EXTRACT_DOM_BODY_JS = """
 """
 
 
-def _extract_feed_detail(page: Page, feed_id: str) -> FeedDetailResponse:
+def _extract_feed_detail(
+    page: Page,
+    feed_id: str,
+    *,
+    comment_limit: int = 20,
+    stopped_reason: str = "not_requested",
+) -> FeedDetailResponse:
     """从 __INITIAL_STATE__ 提取 Feed 详情，轮询最多 10s。
 
     两阶段提取：
@@ -299,16 +311,27 @@ def _extract_feed_detail(page: Page, feed_id: str) -> FeedDetailResponse:
         note["_domBody"] = dom_result.get("body", "")
         note["_domTags"] = dom_result.get("tags", [])
 
+    comments = CommentList.from_dict(note_data.get("comments", {}))
+    # 页面可能一批写入多条评论，达到上限时会发生小幅超量；输出严格遵守调用方边界。
+    if len(comments.list_) > comment_limit:
+        comments.list_ = comments.list_[:comment_limit]
+        stopped_reason = "limit"
+    pagination = CommentPagination.from_comments(
+        comments,
+        limit=comment_limit,
+        stopped_reason=stopped_reason,
+    )
     return FeedDetailResponse(
         note=FeedDetail.from_dict(note),
-        comments=CommentList.from_dict(note_data.get("comments", {})),
+        comments=comments,
+        comment_pagination=pagination,
     )
 
 
 # ========== 评论加载状态机 ==========
 
 
-def _load_all_comments(page: Page, config: CommentLoadConfig) -> None:
+def _load_all_comments(page: Page, config: CommentLoadConfig) -> str:
     """加载全部评论的状态机。"""
     max_attempts = (
         config.max_comment_items * 3 if config.max_comment_items > 0 else DEFAULT_MAX_ATTEMPTS
@@ -322,7 +345,7 @@ def _load_all_comments(page: Page, config: CommentLoadConfig) -> None:
     # 检查是否无评论
     if _check_no_comments(page):
         logger.info("检测到无评论区域，跳过加载")
-        return
+        return "no_comments"
 
     # 状态
     last_count = 0
@@ -344,7 +367,7 @@ def _load_all_comments(page: Page, config: CommentLoadConfig) -> None:
                 total_clicked,
                 total_skipped,
             )
-            return
+            return "end"
 
         # 定期点击展开按钮
         if config.click_more_replies and attempt % BUTTON_CLICK_INTERVAL == 0:
@@ -371,7 +394,7 @@ def _load_all_comments(page: Page, config: CommentLoadConfig) -> None:
         # 检查是否达到目标
         if config.max_comment_items > 0 and current_count >= config.max_comment_items:
             logger.info("已达到目标评论数: %d/%d", current_count, config.max_comment_items)
-            return
+            return "limit"
 
         # 滚动
         if current_count > 0:
@@ -404,8 +427,14 @@ def _load_all_comments(page: Page, config: CommentLoadConfig) -> None:
     # 最终冲刺
     logger.info("达到最大尝试次数，最后冲刺...")
     _human_scroll(page, config.scroll_speed, True, FINAL_SPRINT_PUSH_COUNT)
-    count = _get_comment_count(page)
+    state = _check_page_state(page)
+    count = state["count"]
     logger.info("加载结束: %d 条评论, 点击: %d, 跳过: %d", count, total_clicked, total_skipped)
+    if state["at_end"]:
+        return "end"
+    if count >= config.max_comment_items:
+        return "limit"
+    return "max_attempts"
 
 
 # ========== 滚动 ==========
@@ -427,8 +456,14 @@ def _human_scroll(
         "({scrollTop: window.pageYOffset || document.documentElement.scrollTop || 0,"
         " viewportHeight: window.innerHeight})"
     )
-    before_top = int(state.get("scrollTop", 0)) if isinstance(state, dict) else page.get_scroll_top()
-    viewport_height = int(state.get("viewportHeight", 768)) if isinstance(state, dict) else page.get_viewport_height()
+    before_top = (
+        int(state.get("scrollTop", 0)) if isinstance(state, dict) else page.get_scroll_top()
+    )
+    viewport_height = (
+        int(state.get("viewportHeight", 768))
+        if isinstance(state, dict)
+        else page.get_viewport_height()
+    )
 
     base_ratio = get_scroll_ratio(speed)
     if large_mode:
@@ -527,7 +562,8 @@ def _check_page_state(page: Page) -> dict:
         f"(function(){{"
         f"  var count = document.querySelectorAll({sel_parent}).length;"
         f"  var noText = (document.querySelector({sel_no}) || {{}}).textContent || '';"
-        f"  var endText = ((document.querySelector({sel_end}) || {{}}).textContent || '').toUpperCase();"
+        f"  var endText = ((document.querySelector({sel_end}) || {{}}).textContent || '')"
+        f".toUpperCase();"
         f"  return {{count: count,"
         f"    no_comments: noText.indexOf('这是一片荒地') >= 0,"
         f"    at_end: endText.indexOf('THE END') >= 0 || endText.indexOf('THEEND') >= 0}};"

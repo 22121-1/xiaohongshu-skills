@@ -56,10 +56,66 @@ def to_markdown(data: dict | list) -> str:
             if url:
                 lines.append(f"{index}. <{url}>")
         lines.append("")
+    video = note.get("video") or {}
+    streams = ((video.get("media") or {}).get("stream") or {}) if isinstance(video, dict) else {}
+    if isinstance(streams, dict) and streams:
+        lines.extend(["## 视频媒体地址", "", "仅记录页面返回的全部编码和档位，未下载视频。", ""])
+        for codec, variants in streams.items():
+            if not isinstance(variants, list):
+                continue
+            if not variants:
+                lines.append(f"- {_text(codec)}：页面返回空档位")
+                continue
+            for index, variant in enumerate(variants, 1):
+                if not isinstance(variant, dict):
+                    continue
+                details = [str(codec), str(index)]
+                if variant.get("width") and variant.get("height"):
+                    details.append(f"{variant['width']}x{variant['height']}")
+                if variant.get("qualityType"):
+                    details.append(str(variant["qualityType"]))
+                master = _safe_url(variant.get("masterUrl"))
+                if master:
+                    lines.append(f"- {_text(' / '.join(details))}：<{master}>")
+                backups = variant.get("backupUrls") or []
+                if isinstance(backups, list):
+                    for backup in backups:
+                        safe_backup = _safe_url(backup)
+                        if safe_backup:
+                            lines.append(f"  - 备用地址：<{safe_backup}>")
+        lines.append("")
+    subtitles = video.get("subtitles") if isinstance(video, dict) else None
+    if isinstance(subtitles, list):
+        subtitle_groups = [("字幕", subtitles)]
+    elif isinstance(subtitles, dict):
+        subtitle_groups = subtitles.items()
+    else:
+        subtitle_groups = []
+    subtitle_lines: list[str] = []
+    for language, items in subtitle_groups:
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            subtitle_url = _safe_url(item.get("url"))
+            if subtitle_url:
+                label = item.get("language") or language
+                subtitle_lines.append(f"- {_text(label)}：<{subtitle_url}>")
+    if subtitle_lines:
+        lines.extend(["## 字幕地址", "", "仅记录地址，未下载字幕。", "", *subtitle_lines, ""])
     comments = data.get("comments") or []
     if isinstance(comments, dict):
         comments = comments.get("list") or []
-    lines.extend(["## 已读取评论", "", "仅包含本次读取的数据，不保证评论及回复齐全。", ""])
+    pagination = data.get("comment_pagination") or {}
+    completeness = pagination.get("comments_complete") if isinstance(pagination, dict) else None
+    if completeness is True:
+        coverage_text = "页面数据表明本次读取的一级评论及回复完整。"
+    elif completeness is False:
+        coverage_text = "本次读取的数据不完整；分页信息见完整数据。"
+    else:
+        coverage_text = "评论完整性未知，仅包含本次读取的数据，不保证评论及回复齐全。"
+    lines.extend(["## 已读取评论", "", coverage_text, ""])
 
     def append_comments(items, depth=0):
         for item in items:

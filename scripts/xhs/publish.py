@@ -7,6 +7,8 @@ import logging
 import random
 import re
 import time
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 from .cdp import Page
 from .errors import (
@@ -21,18 +23,15 @@ from .selectors import (
     CONTENT_LENGTH_ERROR,
     CREATOR_TAB,
     DATETIME_INPUT,
-    FILE_INPUT,
     IMAGE_PREVIEW,
     ORIGINAL_SWITCH,
     ORIGINAL_SWITCH_CARD,
     POPOVER,
-    PUBLISH_BUTTON,
     SCHEDULE_SWITCH,
     TAG_FIRST_ITEM,
     TAG_TOPIC_CONTAINER,
     TITLE_INPUT,
     TITLE_MAX_SUFFIX,
-    UPLOAD_CONTENT,
     UPLOAD_INPUT,
     VISIBILITY_DROPDOWN,
     VISIBILITY_OPTIONS,
@@ -41,6 +40,22 @@ from .types import PublishImageContent
 from .urls import PUBLISH_URL
 
 logger = logging.getLogger(__name__)
+
+PUBLISH_CONFIRM_TIMEOUT = 15.0
+PUBLISH_SUCCESS_PATHS = {"/publish/success"}
+PUBLISH_PAGE_TIMEZONE = timezone(timedelta(hours=8), name="Asia/Shanghai")
+MIN_SCHEDULE_DELAY = timedelta(hours=1)
+MAX_SCHEDULE_DELAY = timedelta(days=14)
+IMAGE_FILE_INPUT = ", ".join(
+    f'input[type="file"][accept*="{token}"]'
+    for token in ("image/", ".jpg", ".jpeg", ".png", ".webp", ".heic")
+)
+
+
+class PublishUnconfirmedError(PublishError):
+    """发布已触发，但没有足够证据确认结果。"""
+
+    status = "unknown"
 
 
 def publish_image_content(page: Page, content: PublishImageContent) -> None:
@@ -76,6 +91,8 @@ def fill_publish_form(page: Page, content: PublishImageContent) -> None:
     if not content.image_paths:
         raise PublishError("图片不能为空")
 
+    schedule_time = _validate_schedule_time(content.schedule_time)
+
     # 导航到发布页
     _navigate_to_publish_page(page)
 
@@ -96,7 +113,7 @@ def fill_publish_form(page: Page, content: PublishImageContent) -> None:
         content.title,
         len(content.image_paths),
         len(tags),
-        content.schedule_time,
+        schedule_time,
         content.is_original,
         content.visibility,
     )
@@ -107,7 +124,7 @@ def fill_publish_form(page: Page, content: PublishImageContent) -> None:
         content.title,
         content.content,
         tags,
-        content.schedule_time,
+        schedule_time,
         content.is_original,
         content.visibility,
     )
@@ -132,6 +149,36 @@ def click_publish_button(page: Page) -> None:
     # 1) 注入多层响应捕获
     #    XHS 自家有多层 XHR 拦截嵌套（s1-main / interceptor.js / axios），URL pattern
     #    无法可靠匹配；用"响应内容标志"判定 + console.error hook + DOM toast 观察器三管齐下。
+    _install_publish_result_capture(page)
+
+    # 2) dispatchEvent 触发发布
+    try:
+        fire_result = page.evaluate(
+            """
+            (() => {
+                const host = document.querySelector('xhs-publish-btn[is-publish="true"]');
+                if (!host) return 'not_found';
+                if (host.getAttribute('submit-disabled') === 'true') return 'disabled';
+                host.dispatchEvent(new CustomEvent('publish', {bubbles: true, cancelable: true}));
+                return 'fired';
+            })()
+            """
+        )
+    except Exception as e:
+        raise PublishUnconfirmedError(
+            "发布结果未确认：派发发布事件时连接或页面脚本异常，操作可能已触发；"
+            "为避免重复发布，未自动重试"
+        ) from e
+    if fire_result == "not_found":
+        raise PublishError("未找到 <xhs-publish-btn> 发布按钮容器")
+    if fire_result == "disabled":
+        raise PublishError("发布按钮 submit-disabled=true，不可发布")
+
+    _wait_for_publish_confirmation(page)
+
+
+def _install_publish_result_capture(page: Page) -> None:
+    """安装发布响应捕获器，不触发发布。"""
     page.evaluate(
         """
         (() => {
@@ -246,60 +293,92 @@ def click_publish_button(page: Page) -> None:
         """
     )
 
-    # 2) dispatchEvent 触发发布
-    fire_result = page.evaluate(
-        """
-        (() => {
-            const host = document.querySelector('xhs-publish-btn[is-publish="true"]');
-            if (!host) return 'not_found';
-            if (host.getAttribute('submit-disabled') === 'true') return 'disabled';
-            host.dispatchEvent(new CustomEvent('publish', {bubbles: true, cancelable: true}));
-            return 'fired';
-        })()
-        """
-    )
-    if fire_result == "not_found":
-        raise PublishError("未找到 <xhs-publish-btn> 发布按钮容器")
-    if fire_result == "disabled":
-        raise PublishError("发布按钮 submit-disabled=true，不可发布")
 
-    # 3) 轮询等待 publish API 响应（15s 超时）
-    deadline = time.monotonic() + 15
-    result = None
+def _wait_for_publish_confirmation(page: Page, timeout: float = PUBLISH_CONFIRM_TIMEOUT) -> None:
+    """等待一次发布操作的 API 反馈或成功跳转。"""
+    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        result = page.evaluate("window.__xhsPublishResult")
+        try:
+            result = page.evaluate("window.__xhsPublishResult")
+        except Exception as e:
+            raise PublishUnconfirmedError(
+                "发布结果未确认：读取发布反馈时连接或页面脚本异常；为避免重复发布，未自动重试"
+            ) from e
         if result:
-            break
+            _raise_for_publish_result(result)
+            time.sleep(2)
+            return
+
+        try:
+            current_url = page.evaluate("window.location.href")
+        except Exception as e:
+            raise PublishUnconfirmedError(
+                "发布结果未确认：读取发布后页面地址时连接或页面脚本异常；为避免重复发布，未自动重试"
+            ) from e
+        if isinstance(current_url, str) and _is_publish_success_url(current_url):
+            logger.info("发布成功，已跳转离开发布页: %s", current_url)
+            return
         time.sleep(0.3)
 
-    if not result:
-        logger.warning("15s 内未捕获到任何发布反馈（XHR/console/toast 都没匹配）")
-        time.sleep(2)
-        return
+    raise PublishUnconfirmedError(
+        "发布结果未确认：等待发布反馈超时，且未出现创作平台的受信任成功页；"
+        "为避免重复发布，未自动重试"
+    )
 
-    # 4) 解析业务码
+
+def _is_publish_success_url(url: str) -> bool:
+    """仅接受创作平台自身的 HTTPS 成功路由。"""
+    parsed = urlparse(url)
+    return (
+        parsed.scheme == "https"
+        and parsed.hostname == "creator.xiaohongshu.com"
+        and parsed.path in PUBLISH_SUCCESS_PATHS
+    )
+
+
+def _raise_for_publish_result(result: object) -> None:
+    """校验捕获到的发布响应；仅明确成功时正常返回。"""
+    if not isinstance(result, dict):
+        raise PublishUnconfirmedError(
+            "发布结果未确认：捕获到的发布反馈格式无法识别；为避免重复发布，未自动重试"
+        )
+
     source = result.get("source", "unknown")
     code = result.get("code")
     msg = result.get("msg", "")
     success = result.get("success")
+    status = result.get("status")
+    numeric_code = code if isinstance(code, int) and not isinstance(code, bool) else None
     logger.info("捕获发布响应（来源=%s code=%s msg=%r）", source, code, msg)
-
-    if code == 0 or success is True:
-        logger.info("发布成功")
-        time.sleep(2)
-        return
 
     # XHS 风控类业务码（-913x 段）+ 关键词兜底
     is_risk_control = (
-        (code is not None and -9140 <= code <= -9130)
+        (numeric_code is not None and -9140 <= numeric_code <= -9130)
         or "违反" in (msg or "")
         or "禁止发笔记" in (msg or "")
         or "违规" in (msg or "")
     )
     if is_risk_control:
-        raise AccountRiskControlError(code or -9136, msg or "账号被风控")
+        raise AccountRiskControlError(numeric_code or -9136, msg or "账号被风控")
 
-    raise PublishError(f"发布失败：code={code} msg={msg!r}")
+    if (numeric_code is not None and numeric_code != 0) or success is False:
+        raise PublishError(f"发布失败：code={code} msg={msg!r}")
+    if isinstance(status, int) and status >= 400:
+        raise PublishError(f"发布失败：HTTP {status} code={code} msg={msg!r}")
+
+    if code is not None and numeric_code is None:
+        raise PublishUnconfirmedError(
+            f"发布结果未确认：捕获到无法识别的业务码（code={code!r}）；为避免重复发布，未自动重试"
+        )
+
+    if numeric_code == 0 or success is True:
+        logger.info("发布成功")
+        return
+
+    raise PublishUnconfirmedError(
+        f"发布结果未确认：捕获到无法识别的反馈（来源={source} code={code} msg={msg!r}）；"
+        "为避免重复发布，未自动重试"
+    )
 
 
 def save_as_draft(page: Page) -> None:
@@ -365,7 +444,8 @@ def _click_publish_tab(page: Page, tab_name: str) -> None:
 
                 // 真 tab：有 data-hp-bound + 无 hp 陷阱属性 + 在视口里
                 for (const t of tabs) {{
-                    if (t.hasAttribute('data-hp-kind') || t.hasAttribute('button-hp-installed')) continue;
+                    if (t.hasAttribute('data-hp-kind')
+                        || t.hasAttribute('button-hp-installed')) continue;
                     if (!t.hasAttribute('data-hp-bound')) continue;
                     const title = t.querySelector('span.title');
                     if (!title || title.textContent.trim() !== name) continue;
@@ -377,7 +457,8 @@ def _click_publish_tab(page: Page, tab_name: str) -> None:
 
                 // 兜底 1：无 hp 陷阱属性 + 在视口内（兼容 XHS 未来去掉 data-hp-bound）
                 for (const t of tabs) {{
-                    if (t.hasAttribute('data-hp-kind') || t.hasAttribute('button-hp-installed')) continue;
+                    if (t.hasAttribute('data-hp-kind')
+                        || t.hasAttribute('button-hp-installed')) continue;
                     const title = t.querySelector('span.title');
                     if (!title || title.textContent.trim() !== name) continue;
                     const r = t.getBoundingClientRect();
@@ -401,7 +482,8 @@ def _click_publish_tab(page: Page, tab_name: str) -> None:
                         // 找视口内 + 无 hp 陷阱 + active 的 tab，取它的 title
                         const tabs = document.querySelectorAll({json.dumps(CREATOR_TAB)});
                         for (const t of tabs) {{
-                            if (t.hasAttribute('data-hp-kind') || t.hasAttribute('button-hp-installed')) continue;
+                            if (t.hasAttribute('data-hp-kind')
+                                || t.hasAttribute('button-hp-installed')) continue;
                             if (!t.classList.contains('active')) continue;
                             const r = t.getBoundingClientRect();
                             if (r.left < -1000 || r.top < -1000) continue;
@@ -466,7 +548,7 @@ def _upload_images(page: Page, image_paths: list[str]) -> None:
         raise PublishError("没有有效的图片文件")
 
     for i, path in enumerate(valid_paths):
-        selector = UPLOAD_INPUT if i == 0 else FILE_INPUT
+        selector = UPLOAD_INPUT if i == 0 else IMAGE_FILE_INPUT
         logger.info("上传第 %d 张图片: %s", i + 1, path)
 
         page.set_file_input(selector, [path])
@@ -525,7 +607,7 @@ def _fill_publish_form(
     title: str,
     content: str,
     tags: list[str],
-    schedule_time: str | None,
+    schedule_time: datetime | None,
     is_original: bool,
     visibility: str,
 ) -> None:
@@ -575,7 +657,7 @@ def _fill_publish_form(
             _set_original(page)
             logger.info("已声明原创")
         except Exception as e:
-            logger.warning("设置原创声明失败: %s", e)
+            raise PublishError(f"设置原创声明失败（已请求原创，中止发布）：{e}") from e
 
     logger.info("表单填写完成，等待确认发布")
 
@@ -642,9 +724,10 @@ def _input_tags(page: Page, content_selector: str, tags: list[str]) -> None:
 
     # 先记录当前段落数（insertParagraph 之前），之后用于精确定位正文最后一段
     # 注意：必须在 insertParagraph 之前记录，否则 para_count_before 会包含新增的 tags 行
-    para_count_before = int(page.evaluate(
-        f'document.querySelector("{content_selector}").querySelectorAll("p").length'
-    ) or 1)
+    para_count_before = int(
+        page.evaluate(f'document.querySelector("{content_selector}").querySelectorAll("p").length')
+        or 1
+    )
 
     # 用 evaluate 直接 focus 编辑器、光标移到末尾并换行一次
     # 避免 click_element 因 isTrusted=false 无法真正 focus Quill 编辑器的问题
@@ -730,22 +813,51 @@ def _input_single_tag(page: Page, content_selector: str, tag: str) -> None:
 # ========== 定时发布 ==========
 
 
-def _set_schedule_publish(page: Page, schedule_time: str) -> None:
-    """设置定时发布。"""
-    from datetime import datetime
+def _validate_schedule_time(
+    schedule_time: str | None, *, now: datetime | None = None
+) -> datetime | None:
+    """解析并校验定时发布时间，统一换算为创作平台的中国标准时间。"""
+    if schedule_time is None:
+        return None
 
-    # 解析 ISO8601 时间
     try:
-        dt = datetime.fromisoformat(schedule_time)
+        parsed = datetime.fromisoformat(schedule_time)
     except ValueError as e:
         raise PublishError(f"定时发布时间格式错误: {e}") from e
+
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise PublishError("定时发布时间必须包含明确时区，例如 2026-09-10T18:00:00+08:00")
+
+    scheduled = parsed.astimezone(PUBLISH_PAGE_TIMEZONE)
+    current = (now or datetime.now(PUBLISH_PAGE_TIMEZONE)).astimezone(PUBLISH_PAGE_TIMEZONE)
+    earliest = current + MIN_SCHEDULE_DELAY
+    latest = current + MAX_SCHEDULE_DELAY
+
+    if scheduled < earliest:
+        raise PublishError(
+            "定时发布时间必须至少在1小时后："
+            f"当前设置 {scheduled.isoformat(timespec='minutes')}（Asia/Shanghai），"
+            f"最早可选 {earliest.isoformat(timespec='minutes')}（Asia/Shanghai）"
+        )
+    if scheduled > latest:
+        raise PublishError(
+            "定时发布时间不能超过14天："
+            f"当前设置 {scheduled.isoformat(timespec='minutes')}（Asia/Shanghai），"
+            f"最晚可选 {latest.isoformat(timespec='minutes')}（Asia/Shanghai）"
+        )
+
+    return scheduled
+
+
+def _set_schedule_publish(page: Page, schedule_time: datetime) -> None:
+    """设置已校验并换算为中国标准时间的定时发布时间。"""
 
     # 点击定时发布开关
     page.click_element(SCHEDULE_SWITCH)
     time.sleep(0.8)
 
     # 设置日期时间
-    datetime_str = dt.strftime("%Y-%m-%d %H:%M")
+    datetime_str = schedule_time.strftime("%Y-%m-%d %H:%M")
     page.select_all_text(DATETIME_INPUT)
     page.input_text(DATETIME_INPUT, datetime_str)
     time.sleep(0.5)

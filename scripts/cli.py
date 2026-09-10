@@ -450,7 +450,7 @@ def cmd_user_profile(args: argparse.Namespace) -> None:
 
     browser, page = _connect(args)
     try:
-        profile = get_user_profile(page, args.user_id, args.xsec_token)
+        profile = get_user_profile(page, args.user_id, args.xsec_token, tab=args.tab)
         _output(profile.to_dict())
     finally:
         browser.close()
@@ -462,8 +462,8 @@ def cmd_post_comment(args: argparse.Namespace) -> None:
 
     browser, page = _connect(args)
     try:
-        post_comment(page, args.feed_id, args.xsec_token, args.content)
-        _output({"success": True, "message": "评论发送成功"})
+        result = post_comment(page, args.feed_id, args.xsec_token, args.content)
+        _output(result)
     finally:
         browser.close()
 
@@ -474,7 +474,7 @@ def cmd_reply_comment(args: argparse.Namespace) -> None:
 
     browser, page = _connect(args)
     try:
-        reply_comment(
+        result = reply_comment(
             page,
             args.feed_id,
             args.xsec_token,
@@ -482,7 +482,7 @@ def cmd_reply_comment(args: argparse.Namespace) -> None:
             comment_id=args.comment_id or "",
             user_id=args.user_id or "",
         )
-        _output({"success": True, "message": "回复成功"})
+        _output(result)
     finally:
         browser.close()
 
@@ -497,7 +497,7 @@ def cmd_like_feed(args: argparse.Namespace) -> None:
             result = unlike_feed(page, args.feed_id, args.xsec_token)
         else:
             result = like_feed(page, args.feed_id, args.xsec_token)
-        _output(result.to_dict())
+        _output(result.to_dict(), exit_code=0 if result.success else 2)
     finally:
         browser.close()
 
@@ -512,7 +512,7 @@ def cmd_favorite_feed(args: argparse.Namespace) -> None:
             result = unfavorite_feed(page, args.feed_id, args.xsec_token)
         else:
             result = favorite_feed(page, args.feed_id, args.xsec_token)
-        _output(result.to_dict())
+        _output(result.to_dict(), exit_code=0 if result.success else 2)
     finally:
         browser.close()
 
@@ -963,7 +963,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_argument("--load-all-comments", action="store_true", help="加载全部评论")
     sub.add_argument("--click-more-replies", action="store_true", help="展开更多回复")
     sub.add_argument("--max-replies-threshold", type=int, default=10)
-    sub.add_argument("--max-comment-items", type=int, default=0)
+    sub.add_argument("--max-comment-items", type=int, default=20,
+                     help="一级评论上限，默认20；非正数也按20处理")
     sub.add_argument("--scroll-speed", default="normal", help="slow|normal|fast")
     sub.add_argument("--keyword", default="篮球", help="风控重试时的搜索关键词")
     sub.set_defaults(func=cmd_get_feed_detail)
@@ -972,6 +973,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = subparsers.add_parser("user-profile", help="获取用户主页")
     sub.add_argument("--user-id", required=True)
     sub.add_argument("--xsec-token", required=True)
+    sub.add_argument("--tab", choices=["note", "fav", "liked"], default="note",
+                     help="主页分组：笔记、收藏或点赞；仅能读取网页可见内容")
     sub.set_defaults(func=cmd_user_profile)
 
     # post-comment
@@ -1111,7 +1114,10 @@ def main() -> None:
         if isinstance(e, NotLoggedInError):
             _output({"success": False, "error": str(e)}, exit_code=1)
         logger.error("执行失败: %s", e, exc_info=True)
-        _output({"success": False, "error": str(e)}, exit_code=2)
+        error = {"success": False, "error": str(e)}
+        if getattr(e, "status", None):
+            error["status"] = e.status
+        _output(error, exit_code=2)
 
 
 if __name__ == "__main__":

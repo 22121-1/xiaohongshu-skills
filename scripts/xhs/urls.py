@@ -21,9 +21,9 @@ def make_search_url(keyword: str) -> str:
     return f"https://www.xiaohongshu.com/search_result?{params}"
 
 
-def make_user_profile_url(user_id: str, xsec_token: str) -> str:
+def make_user_profile_url(user_id: str, xsec_token: str, tab: str = "note") -> str:
     """构建用户主页 URL。"""
-    return (
-        f"https://www.xiaohongshu.com/user/profile/{user_id}"
-        f"?xsec_token={xsec_token}&xsec_source=pc_note"
-    )
+    params = {"xsec_token": xsec_token, "xsec_source": "pc_note"}
+    if tab not in {"", "note"}:
+        params.update(tab=tab, subTab="note")
+    return f"https://www.xiaohongshu.com/user/profile/{user_id}?{urlencode(params)}"

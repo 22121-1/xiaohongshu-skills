@@ -5,11 +5,10 @@ from __future__ import annotations
 import json
 import logging
 import time
+from pathlib import Path
 
 from .cdp import Page
-from .errors import NoFeedsError
-from .human import sleep_random
-from .selectors import FILTER_BUTTON, FILTER_PANEL
+from .errors import NoFeedsError, XHSError
 from .types import Feed, FilterOption
 from .urls import make_search_url
 
@@ -88,19 +87,17 @@ def search_feeds(
         NoFeedsError: 没有捕获到搜索结果。
         ValueError: 筛选选项无效。
     """
+    internal_filters = _convert_filters(filter_option) if filter_option else []
     search_url = make_search_url(keyword)
     page.navigate(search_url)
     page.wait_for_load()
     page.wait_dom_stable()
 
     # 等待 __INITIAL_STATE__.search.feeds 有数据
-    _wait_for_search_feeds(page)
+    _wait_for_search_feeds(page, keyword=keyword)
 
-    # 应用筛选条件（若有）
-    if filter_option:
-        internal_filters = _convert_filters(filter_option)
-        if internal_filters:
-            _apply_filters(page, internal_filters)
+    if internal_filters:
+        _apply_filters(page, internal_filters, keyword=keyword)
 
     # 提取搜索结果
     result = page.evaluate(_EXTRACT_SEARCH_JS)
@@ -108,100 +105,40 @@ def search_feeds(
         raise NoFeedsError()
 
     feeds_data = json.loads(result)
-    if not feeds_data:
-        raise NoFeedsError()
-
-    return [Feed.from_dict(f) for f in feeds_data]
+    return [Feed.from_dict(f) for f in feeds_data if f.get("modelType") == "note"]
 
 
-def _wait_for_search_feeds(page: Page, timeout: float = 15.0) -> None:
-    """等待 __INITIAL_STATE__.search.feeds 有数据。
-
-    Raises:
-        NoFeedsError: 超时仍无数据。
-    """
+def _wait_for_search_feeds(page: Page, timeout: float = 15.0, *, keyword: str = "") -> None:
+    """只有加载完成才读取列表；零结果是有效结果，加载失败不当作空列表。"""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        result = page.evaluate(_EXTRACT_SEARCH_JS)
-        if result:
-            try:
-                if json.loads(result):
-                    return
-            except json.JSONDecodeError:
-                pass
-        time.sleep(0.3)
-    raise NoFeedsError()
+        state = page.evaluate("""(() => {
+            const s = window.__INITIAL_STATE__?.search;
+            const u = v => v?.value ?? v?._value ?? v;
+            return {state: u(s?.state), keyword: u(s?.searchContext)?.keyword,
+                ready: location.pathname === "/search_result" && Array.isArray(u(s?.feeds))};
+        })()""")
+        if isinstance(state, dict):
+            if state.get("state") in {"error", "failed", "fail"}:
+                raise XHSError("搜索加载失败")
+            if (state.get("ready") and state.get("state") == "success"
+                    and (not keyword or state.get("keyword") == keyword)):
+                return
+        time.sleep(0.2)
+    raise XHSError("搜索结果未确认加载完成")
 
 
-def _apply_filters(page: Page, filters: list[tuple[int, str]]) -> None:
-    """应用筛选条件。
+_FILTER_LABELS = {1: "排序依据", 2: "笔记类型", 3: "发布时间", 4: "搜索范围", 5: "位置距离"}
+_FILTER_SCRIPT = Path(__file__).with_name("search_filters.js").read_text(encoding="utf-8")
 
-    在单次 evaluate 调用内完成：点击筛选按钮 → 等待面板 → 按文本点击各选项
-    → 等待搜索结果刷新。
-    避免多次 WebSocket 连接导致面板关闭的时序问题。
-    """
-    filter_js_list = ", ".join(
-        f'[{idx}, {json.dumps(text)}]' for idx, text in filters
-    )
 
-    # 记录当前 feeds 快照，用于检测结果是否已刷新
-    snapshot_js = "JSON.stringify(window.__INITIAL_STATE__?.search?.feeds?.value ?? window.__INITIAL_STATE__?.search?.feeds?._value ?? null)"
-
-    script = f"""
-(() => {{
-  return new Promise((resolve, reject) => {{
-    const btn = document.querySelector('div.filter');
-    if (!btn) {{ reject('筛选按钮不存在'); return; }}
-
-    // 记录点击前的 feeds 快照（用于判断结果已刷新）
-    const snapshot = {snapshot_js};
-    btn.click();
-
-    const items = [{filter_js_list}];
-    let attempts = 0;
-
-    // 等待筛选面板出现
-    const panelTimer = setInterval(() => {{
-      const wrapper = document.querySelector('div.filters-wrapper');
-      if (!wrapper) {{
-        if (++attempts > 50) {{ clearInterval(panelTimer); reject('筛选面板等待超时'); }}
-        return;
-      }}
-      clearInterval(panelTimer);
-
-      // 依次点击各筛选项
-      for (const [groupIdx, text] of items) {{
-        const group = wrapper.querySelectorAll('div.filters')[groupIdx - 1];
-        if (!group) {{ reject('筛选组 ' + groupIdx + ' 不存在'); return; }}
-        const tag = Array.from(group.querySelectorAll('div.tags'))
-          .find(el => el.textContent.trim() === text);
-        if (!tag) {{ reject('选项不存在: ' + text); return; }}
-        tag.click();
-      }}
-
-      // 等待搜索结果刷新（feeds 快照变化）
-      let refreshAttempts = 0;
-      const refreshTimer = setInterval(() => {{
-        const current = {snapshot_js};
-        if (current !== snapshot) {{
-          clearInterval(refreshTimer);
-          resolve(null);
-          return;
-        }}
-        if (++refreshAttempts > 60) {{
-          // 超时也继续（结果可能未变化）
-          clearInterval(refreshTimer);
-          resolve(null);
-        }}
-      }}, 100);
-    }}, 100);
-  }});
-}})()
-"""
+def _apply_filters(page: Page, filters: list[tuple[int, str]], *, keyword: str = "") -> None:
+    params = {"filters": [[_FILTER_LABELS[index], text] for index, text in filters],
+              "keyword": keyword}
     try:
-        page.evaluate(script)
-    except Exception as e:
-        raise ValueError(f"应用筛选失败: {e}") from e
-
-    # 等待 __INITIAL_STATE__ 中有新数据
-    _wait_for_search_feeds(page)
+        result = page.evaluate(f"({_FILTER_SCRIPT})({json.dumps(params, ensure_ascii=False)})")
+    except Exception as exc:
+        raise ValueError(f"应用筛选失败: {exc}") from exc
+    if not isinstance(result, dict) or result.get("verified") is not True:
+        raise ValueError("筛选未确认成功，未返回结果")
+    _wait_for_search_feeds(page, keyword=keyword)

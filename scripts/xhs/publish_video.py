@@ -5,16 +5,21 @@ from __future__ import annotations
 import logging
 import os
 import time
+from datetime import datetime
 
 from .cdp import Page
 from .errors import PublishError, UploadTimeoutError
 from .publish import (
+    PublishUnconfirmedError,
     _click_publish_tab,
     _find_content_element,
     _input_tags,
+    _install_publish_result_capture,
     _navigate_to_publish_page,
     _set_schedule_publish,
     _set_visibility,
+    _validate_schedule_time,
+    _wait_for_publish_confirmation,
 )
 from .selectors import (
     FILE_INPUT,
@@ -56,6 +61,8 @@ def fill_publish_video_form(page: Page, content: PublishVideoContent) -> None:
     if not content.video_path:
         raise PublishError("视频不能为空")
 
+    schedule_time = _validate_schedule_time(content.schedule_time)
+
     # 导航到发布页
     _navigate_to_publish_page(page)
 
@@ -72,7 +79,7 @@ def fill_publish_video_form(page: Page, content: PublishVideoContent) -> None:
         content.title,
         content.content,
         content.tags,
-        content.schedule_time,
+        schedule_time,
         content.visibility,
     )
 
@@ -84,9 +91,15 @@ def click_publish_video_button(page: Page) -> None:
         page: CDP 页面对象。
     """
     _wait_for_publish_button_clickable(page)
-    page.click_element(PUBLISH_BUTTON)
-    time.sleep(3)
-    logger.info("视频发布完成")
+    _install_publish_result_capture(page)
+    try:
+        page.click_element(PUBLISH_BUTTON)
+    except Exception as e:
+        raise PublishUnconfirmedError(
+            "视频发布结果未确认：点击发布按钮时连接或页面脚本异常，操作可能已触发；"
+            "为避免重复发布，未自动重试"
+        ) from e
+    _wait_for_publish_confirmation(page)
 
 
 def _upload_video(page: Page, video_path: str) -> None:
@@ -136,7 +149,7 @@ def _fill_publish_video_form(
     title: str,
     content: str,
     tags: list[str],
-    schedule_time: str | None,
+    schedule_time: datetime | None,
     visibility: str,
 ) -> None:
     """填写视频表单（不点击发布）。"""

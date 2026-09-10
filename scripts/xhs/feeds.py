@@ -46,4 +46,4 @@ def list_feeds(page: Page) -> list[Feed]:
         raise NoFeedsError()
 
     feeds_data = json.loads(result)
-    return [Feed.from_dict(f) for f in feeds_data]
+    return [Feed.from_dict(f) for f in feeds_data if f.get("modelType") == "note"]

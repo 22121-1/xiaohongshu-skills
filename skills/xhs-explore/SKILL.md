@@ -86,7 +86,7 @@ metadata:
 python scripts/cli.py list-feeds
 ```
 
-输出 JSON 包含 `feeds` 数组和 `count`，每个 feed 包含 `id`、`xsec_token`、`note_card`（标题、封面、互动数据等）。
+输出 JSON 包含 `feeds` 数组和 `count`，每个 feed 包含 `id`、`xsecToken`、`displayTitle`、`cover`、`interactInfo`。
 
 ### 搜索笔记
 
@@ -122,7 +122,7 @@ python scripts/cli.py search-feeds \
 #### 搜索结果字段
 
 输出 JSON 包含：
-- `feeds`：笔记列表，每项包含 `id`、`xsec_token`、`note_card`（标题、封面、用户信息、互动数据）
+- `feeds`：笔记列表，每项包含 `id`、`xsecToken`、`displayTitle`、`cover`、`user`、`interactInfo`
 - `count`：结果数量
 
 ### 获取笔记详情
@@ -135,13 +135,13 @@ python scripts/cli.py get-feed-detail \
   --feed-id 67abc1234def567890123456 \
   --xsec-token XSEC_TOKEN
 
-# 加载全部评论
+# 加载更多评论（一级默认上限20）
 python scripts/cli.py get-feed-detail \
   --feed-id 67abc1234def567890123456 \
   --xsec-token XSEC_TOKEN \
   --load-all-comments
 
-# 加载全部评论（展开子评论）
+# 加载更多评论（展开子评论，一级默认上限20）
 python scripts/cli.py get-feed-detail \
   --feed-id 67abc1234def567890123456 \
   --xsec-token XSEC_TOKEN \
@@ -157,7 +157,9 @@ python scripts/cli.py get-feed-detail \
   --max-comment-items 50
 ```
 
-输出包含：笔记完整内容、图片列表、互动数据、评论列表。
+输出保留 `comments` 数组，并在 `comment_pagination` 中给出游标、`has_more`、一级和子评论完整性、读取限制与停止原因。`--load-all-comments` 表示尝试加载更多，默认一级上限 20；非正数也按 20 处理，更多数量需显式指定。只有 `comments_complete=true` 才能宣称全部评论完整，未知字段不可当作完整。
+
+视频详情的 `video` 保留网页提供的各编码媒体流和字幕地址；这些地址可能有时效，不代表媒体已下载。筛选只在全部选项及结果刷新确认后返回，超时不把旧结果当作新结果。首页及搜索结果仅返回 `modelType=note` 的笔记，包含视频笔记。
 
 ### 批量获取详情的防风控策略
 
@@ -182,6 +184,9 @@ python scripts/cli.py get-feed-detail --feed-id ID7 --xsec-token TOKEN7
 - 不要把所有命令无间隔地串在一起
 
 ### 获取用户主页
+
+`user-profile --tab note|fav|liked` 分别读取笔记、收藏或点赞，默认 `note`。只读取网页对当前账号开放的内容；分页和隐私限制不能用其他分组数据代替。
+
 
 ```bash
 python scripts/cli.py user-profile \

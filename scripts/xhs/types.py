@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from typing import Any
 
 # ========== Feed 列表 ==========
 
@@ -207,6 +209,9 @@ class Comment:
     liked: bool = False
     user_info: User = field(default_factory=User)
     sub_comment_count: str = ""
+    sub_comment_cursor: str = ""
+    sub_comment_has_more: bool | None = None
+    has_more: bool | None = None
     sub_comments: list[Comment] = field(default_factory=list)
     show_tags: list[str] = field(default_factory=list)
 
@@ -222,6 +227,10 @@ class Comment:
             liked=d.get("liked", False),
             user_info=User.from_dict(d.get("userInfo", {})),
             sub_comment_count=d.get("subCommentCount", ""),
+            sub_comment_cursor=d.get("subCommentCursor", ""),
+            sub_comment_has_more=(d.get("subCommentHasMore")
+                                  if isinstance(d.get("subCommentHasMore"), bool) else None),
+            has_more=d.get("hasMore") if isinstance(d.get("hasMore"), bool) else None,
             sub_comments=[cls.from_dict(c) for c in d.get("subComments", []) or []],
             show_tags=d.get("showTags", []) or [],
         )
@@ -241,6 +250,12 @@ class Comment:
         }
         if self.sub_comments:
             result["subComments"] = [c.to_dict() for c in self.sub_comments]
+        if self.sub_comment_cursor:
+            result["subCommentCursor"] = self.sub_comment_cursor
+        if self.sub_comment_has_more is not None:
+            result["subCommentHasMore"] = self.sub_comment_has_more
+        if self.has_more is not None:
+            result["hasMore"] = self.has_more
         return result
 
 
@@ -248,15 +263,179 @@ class Comment:
 class CommentList:
     list_: list[Comment] = field(default_factory=list)
     cursor: str = ""
-    has_more: bool = False
+    # 页面状态没有 hasMore 时不能把缺失值当成 false，否则会误报一级评论已完整。
+    has_more: bool | None = None
+    first_request_finished: bool | None = None
 
     @classmethod
     def from_dict(cls, d: dict) -> CommentList:
         return cls(
             list_=[Comment.from_dict(c) for c in d.get("list", []) or []],
             cursor=d.get("cursor", ""),
-            has_more=d.get("hasMore", False),
+            has_more=d.get("hasMore") if isinstance(d.get("hasMore"), bool) else None,
+            first_request_finished=(d.get("firstRequestFinish")
+                                    if isinstance(d.get("firstRequestFinish"), bool) else None),
         )
+
+
+def _parse_count(value: object) -> int | None:
+    """解析页面中的计数字段；无法确认时返回 None。"""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, str):
+        text = value.strip()
+        if text.isdigit():
+            return int(text)
+    return None
+
+
+def _sub_comments_complete(comments: list[Comment]) -> bool | None:
+    """根据声明的回复数判断已返回回复是否完整，未知计数保持未知。"""
+    if not comments:
+        return None
+    complete = True
+    saw_known_count = False
+    for comment in comments:
+        reply_has_more = (
+            comment.sub_comment_has_more
+            if comment.sub_comment_has_more is not None
+            else comment.has_more
+        )
+        if reply_has_more is True:
+            return False
+        expected = _parse_count(comment.sub_comment_count)
+        if expected is None:
+            if reply_has_more is False:
+                saw_known_count = True
+            else:
+                complete = False
+            continue
+        saw_known_count = True
+        if len(comment.sub_comments) < expected:
+            return False
+    return True if complete and saw_known_count else None
+
+
+@dataclass
+class CommentPagination:
+    """评论读取范围；完整性使用三态值，None 表示页面数据不足以判断。"""
+
+    cursor: str = ""
+    has_more: bool | None = None
+    first_request_finished: bool | None = None
+    limit: int = 20
+    loaded_root_comments: int = 0
+    stopped_reason: str = "not_requested"
+    root_comments_complete: bool | None = None
+    sub_comments_complete: bool | None = None
+    comments_complete: bool | None = None
+
+    @classmethod
+    def from_comments(
+        cls,
+        comments: CommentList,
+        *,
+        limit: int = 20,
+        stopped_reason: str = "not_requested",
+    ) -> CommentPagination:
+        if stopped_reason in {"end", "no_comments"}:
+            root_complete: bool | None = True
+        elif stopped_reason == "limit" or comments.has_more is True:
+            root_complete = False
+        else:
+            root_complete = None
+
+        if stopped_reason == "no_comments":
+            replies_complete: bool | None = True
+        else:
+            replies_complete = _sub_comments_complete(comments.list_)
+
+        if root_complete is False or replies_complete is False:
+            complete: bool | None = False
+        elif root_complete is True and replies_complete is True:
+            complete = True
+        else:
+            complete = None
+
+        return cls(
+            cursor=comments.cursor,
+            has_more=comments.has_more,
+            first_request_finished=comments.first_request_finished,
+            limit=limit,
+            loaded_root_comments=len(comments.list_),
+            stopped_reason=stopped_reason,
+            root_comments_complete=root_complete,
+            sub_comments_complete=replies_complete,
+            comments_complete=complete,
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "cursor": self.cursor,
+            "has_more": self.has_more,
+            "first_request_finished": self.first_request_finished,
+            "limit": self.limit,
+            "loaded_root_comments": self.loaded_root_comments,
+            "stopped_reason": self.stopped_reason,
+            "root_comments_complete": self.root_comments_complete,
+            "sub_comments_complete": self.sub_comments_complete,
+            "comments_complete": self.comments_complete,
+        }
+
+
+def _decode_json_object(value: object) -> dict[str, Any] | None:
+    """解开 mediaV2 的对象或多层 JSON 字符串，不假定额外字符编码。"""
+    current = value
+    for _ in range(3):
+        if isinstance(current, dict):
+            return current
+        if not isinstance(current, str) or not current.strip():
+            return None
+        try:
+            current = json.loads(current)
+        except (TypeError, ValueError):
+            return None
+    return current if isinstance(current, dict) else None
+
+
+@dataclass
+class VideoDetail:
+    """详情页视频数据；媒体流用字典保留页面提供的全部编码桶。"""
+
+    image: dict[str, Any] = field(default_factory=dict)
+    capa: dict[str, Any] = field(default_factory=dict)
+    media: dict[str, Any] = field(default_factory=dict)
+    subtitles: dict[str, Any] | list[Any] | None = None
+
+    @classmethod
+    def from_dict(cls, d: dict) -> VideoDetail:
+        media_v2 = _decode_json_object(d.get("mediaV2"))
+        subtitles: dict[str, Any] | list[Any] | None = None
+        if media_v2:
+            video_v2 = media_v2.get("video")
+            if isinstance(video_v2, dict):
+                candidate = video_v2.get("subtitles")
+                if isinstance(candidate, (dict, list)):
+                    subtitles = candidate
+        return cls(
+            image=dict(d.get("image") or {}) if isinstance(d.get("image"), dict) else {},
+            capa=dict(d.get("capa") or {}) if isinstance(d.get("capa"), dict) else {},
+            # stream 不写死 h264/h265/av1/h266，EF4 等页面新增键也会原样保留。
+            media=dict(d.get("media") or {}) if isinstance(d.get("media"), dict) else {},
+            subtitles=subtitles,
+        )
+
+    def to_dict(self) -> dict:
+        result: dict[str, Any] = {
+            "image": self.image,
+            "capa": self.capa,
+            "media": self.media,
+        }
+        if self.subtitles is not None:
+            result["subtitles"] = self.subtitles
+        return result
 
 
 @dataclass
@@ -273,6 +452,7 @@ class FeedDetail:
     user: User = field(default_factory=User)
     interact_info: InteractInfo = field(default_factory=InteractInfo)
     image_list: list[DetailImageInfo] = field(default_factory=list)
+    video: VideoDetail | None = None
 
     @classmethod
     def from_dict(cls, d: dict) -> FeedDetail:
@@ -289,10 +469,11 @@ class FeedDetail:
             user=User.from_dict(d.get("user", {})),
             interact_info=InteractInfo.from_dict(d.get("interactInfo", {})),
             image_list=[DetailImageInfo.from_dict(i) for i in d.get("imageList", []) or []],
+            video=VideoDetail.from_dict(d["video"]) if isinstance(d.get("video"), dict) else None,
         )
 
     def to_dict(self) -> dict:
-        return {
+        result = {
             "noteId": self.note_id,
             "title": self.title,
             "desc": self.desc,
@@ -322,24 +503,51 @@ class FeedDetail:
                 for img in self.image_list
             ],
         }
+        if self.video is not None:
+            result["video"] = self.video.to_dict()
+        return result
 
 
 @dataclass
 class FeedDetailResponse:
     note: FeedDetail = field(default_factory=FeedDetail)
     comments: CommentList = field(default_factory=CommentList)
+    comment_pagination: CommentPagination = field(default_factory=CommentPagination)
 
     @classmethod
     def from_dict(cls, d: dict) -> FeedDetailResponse:
-        return cls(
-            note=FeedDetail.from_dict(d.get("note", {})),
-            comments=CommentList.from_dict(d.get("comments", {})),
-        )
+        raw_comments = d.get("comments", {})
+        if isinstance(raw_comments, list):
+            raw_comments = {"list": raw_comments}
+        comments = CommentList.from_dict(raw_comments if isinstance(raw_comments, dict) else {})
+        response = cls(note=FeedDetail.from_dict(d.get("note", {})), comments=comments)
+        pagination = d.get("comment_pagination")
+        if isinstance(pagination, dict):
+            response.comment_pagination = CommentPagination(
+                cursor=str(pagination.get("cursor") or ""),
+                has_more=(pagination.get("has_more")
+                          if isinstance(pagination.get("has_more"), bool) else None),
+                first_request_finished=(
+                    pagination.get("first_request_finished")
+                    if isinstance(pagination.get("first_request_finished"), bool)
+                    else None
+                ),
+                limit=int(pagination.get("limit", 20)),
+                loaded_root_comments=int(pagination.get("loaded_root_comments", 0)),
+                stopped_reason=str(pagination.get("stopped_reason") or "not_requested"),
+                root_comments_complete=pagination.get("root_comments_complete"),
+                sub_comments_complete=pagination.get("sub_comments_complete"),
+                comments_complete=pagination.get("comments_complete"),
+            )
+        else:
+            response.comment_pagination = CommentPagination.from_comments(comments)
+        return response
 
     def to_dict(self) -> dict:
         return {
             "note": self.note.to_dict(),
             "comments": [c.to_dict() for c in self.comments.list_],
+            "comment_pagination": self.comment_pagination.to_dict(),
         }
 
 
@@ -458,13 +666,17 @@ class ActionResult:
     feed_id: str = ""
     success: bool = False
     message: str = ""
+    status: str | None = None
 
     def to_dict(self) -> dict:
-        return {
+        result = {
             "feed_id": self.feed_id,
             "success": self.success,
             "message": self.message,
         }
+        if self.status is not None:
+            result["status"] = self.status
+        return result
 
 
 # ========== 评论加载配置 ==========
@@ -476,5 +688,15 @@ class CommentLoadConfig:
 
     click_more_replies: bool = False
     max_replies_threshold: int = 10
-    max_comment_items: int = 0  # 0 = 不限
+    max_comment_items: int = 20
     scroll_speed: str = "normal"  # slow|normal|fast
+
+    def normalized(self) -> CommentLoadConfig:
+        """将零值和负数视为未设置，防止一次详情请求无界滚动。"""
+        return CommentLoadConfig(
+            click_more_replies=self.click_more_replies,
+            max_replies_threshold=(self.max_replies_threshold
+                                   if self.max_replies_threshold > 0 else 10),
+            max_comment_items=self.max_comment_items if self.max_comment_items > 0 else 20,
+            scroll_speed=self.scroll_speed or "normal",
+        )

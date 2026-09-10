@@ -64,6 +64,11 @@
         const normalizeTarget = item => ({type: String(item.type || 'unknown'),
             id: String(item.id || ''), title: String(item.content || ''),
             xsec_token: String(item.xsecToken || '')});
+        const comment = m.commentInfo || {};
+        const contentStatus = item => String(item.illegalInfo?.illegalStatus || 'UNKNOWN');
+        const statuses = [comment, target, attachedTarget].filter(item => item.id).map(contentStatus);
+        const unavailable = statuses.some(status => !['NORMAL', 'UNKNOWN'].includes(status));
+        const available = statuses.length > 0 && statuses.every(status => status === 'NORMAL');
         const kind = params.source === 'likes' ? 'likes' : params.source === 'follows' ? 'follows' :
             /^(at|mention)\//i.test(type) ? 'mentions' : /^comment\//i.test(type) ? 'comments' :
             /提到|@了/.test(title) ? 'mentions' : /评论了|回复了/.test(title) ? 'comments' : 'unknown';
@@ -75,7 +80,14 @@
             user, user_details_complete: !!user.user_id && !!user.nickname,
             target: target.id ? normalizeTarget(target) : null,
             attached_target: attachedTarget.id ? normalizeTarget(attachedTarget) : null,
-            comment_id: String(m.commentInfo?.id || ''),
+            comment_id: String(comment.id || ''),
+            liked: typeof comment.liked === 'boolean' ? comment.liked : null,
+            comment_status: comment.id ? contentStatus(comment) : null,
+            target_status: target.id ? contentStatus(target) : null,
+            attached_target_status: attachedTarget.id ? contentStatus(attachedTarget) : null,
+            content_available: unavailable ? false : available ? true : null,
+            // 内容正常不等于页面提供回复入口；缺少信息时不推断可操作。
+            can_reply: !comment.id || unavailable ? false : null,
             content: String(m.commentInfo?.content || ''),
             quoted_comment: String(m.commentInfo?.targetComment?.content || ''),
             note_id: String(note.id || ''),
