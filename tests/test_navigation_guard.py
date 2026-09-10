@@ -76,7 +76,6 @@ process.stdout.write(JSON.stringify(result));
 
 
 @pytest.mark.skipif(not _NODE, reason="执行网页 JavaScript 回归测试需要 Node.js")
-@pytest.mark.parametrize("guard", ["navigation", "creator"])
 @pytest.mark.parametrize("mode,safe", [
     ("restored_image", False),
     ("rich_text_image", False),
@@ -87,14 +86,11 @@ process.stdout.write(JSON.stringify(result));
     ("draft_preview", True),
     ("empty", True),
 ])
-def test_actual_page_guard_preserves_editor_media(guard, mode, safe):
-    if guard == "navigation":
-        source = _GUARD
-        key = "safe"
-    else:
-        script = (Path(__file__).resolve().parents[1] / "scripts/xhs/creator_manage.js").read_text()
-        source = "(" + script + ")({action: 'guard'})"
-        key = "safe_to_navigate"
+def test_actual_page_guard_preserves_editor_media(mode, safe):
+    assert_editor_guard(_GUARD, "safe", mode, safe)
+
+
+def assert_editor_guard(source, key, mode, safe):
     result = subprocess.run(
         [_NODE, "-e", _DRIVER],
         input=json.dumps({"source": source, "mode": mode}),
