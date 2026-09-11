@@ -517,6 +517,52 @@ def cmd_favorite_feed(args: argparse.Namespace) -> None:
         browser.close()
 
 
+def cmd_follow_user(args: argparse.Namespace) -> None:
+    """核验或关注用户；默认 dry-run。"""
+    from xhs.social import follow_user
+
+    browser, page = _connect(args)
+    try:
+        _output(follow_user(page, args.user_id, args.xsec_token, execute=args.execute))
+    finally:
+        browser.close()
+
+
+def cmd_list_notifications(args: argparse.Namespace) -> None:
+    """只读获取通知页已加载条目。"""
+    from xhs.social import list_notifications
+
+    browser, page = _connect(args)
+    try:
+        _output(list_notifications(page, limit=args.limit))
+    finally:
+        browser.close()
+
+
+def cmd_list_inbox(args: argparse.Namespace) -> None:
+    """只读获取收件箱已加载会话摘要。"""
+    from xhs.social import list_inbox
+
+    browser, page = _connect(args)
+    try:
+        _output(list_inbox(page, limit=args.limit))
+    finally:
+        browser.close()
+
+
+def cmd_send_message(args: argparse.Namespace) -> None:
+    """核验或发送私信；默认 dry-run，正文只从文件读取。"""
+    from xhs.social import send_message
+
+    with open(args.content_file, encoding="utf-8") as f:
+        content = f.read()
+    browser, page = _connect(args)
+    try:
+        _output(send_message(page, args.recipient_profile_url, content, execute=args.execute))
+    finally:
+        browser.close()
+
+
 def cmd_publish(args: argparse.Namespace) -> None:
     """发布图文内容。"""
     from image_downloader import process_images
@@ -621,6 +667,84 @@ def cmd_click_publish(args: argparse.Namespace) -> None:
     try:
         click_publish_button(page)
         _output({"success": True, "status": "发布完成"})
+    finally:
+        browser.close()
+
+
+def _normalize_publish_text(text: str | None) -> str:
+    """仅用于发布前校验：忽略编辑器的换行和零宽字符，不忽略正文字符。"""
+    if text is None:
+        return ""
+    return "".join(
+        char for char in text
+        if not char.isspace() and char not in {"\u200b", "\ufeff"}
+    )
+
+
+def cmd_verify_publish_form(args: argparse.Namespace) -> None:
+    """只读核验当前发布页标题和正文是否与候选文件逐字一致。"""
+    from xhs.selectors import CONTENT_EDITOR, TITLE_INPUT
+
+    with open(args.title_file, encoding="utf-8") as f:
+        expected_title = f.read().strip()
+    with open(args.content_file, encoding="utf-8") as f:
+        expected_content = f.read().strip()
+
+    browser, page = _connect_existing(args)
+    try:
+        actual_title = page.get_element_attribute(TITLE_INPUT, "value") or ""
+        actual_content = page.get_element_text(CONTENT_EDITOR) or ""
+        # 小红书编辑器已从 Quill 迁移到 Tiptap/ProseMirror；保留旧选择器，
+        # 但在其读空时只读回退到可见的 contenteditable 正文节点。
+        if not actual_content:
+            actual_content = page.evaluate(
+                """(() => {
+                    const editors = Array.from(document.querySelectorAll(
+                        "div.tiptap.ProseMirror[contenteditable='true'], [role='textbox'][contenteditable='true']"
+                    ));
+                    const editor = editors.find((el) =>
+                        !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+                    );
+                    return editor ? (editor.innerText || editor.textContent || "") : "";
+                })()"""
+            ) or ""
+        editor_diagnostics = page.evaluate(
+            """(() => Array.from(document.querySelectorAll(
+                "div.ql-editor, [role='textbox']"
+            )).map((el) => ({
+                tag: el.tagName,
+                className: el.className || "",
+                role: el.getAttribute("role"),
+                contentEditable: el.getAttribute("contenteditable"),
+                visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length),
+                textChars: (el.textContent || "").length,
+            })))()"""
+        )
+        title_matches = actual_title == expected_title
+        normalized_actual_content = _normalize_publish_text(actual_content)
+        normalized_expected_content = _normalize_publish_text(expected_content)
+        content_matches = normalized_actual_content == normalized_expected_content
+        trailing_after_expected = (
+            normalized_actual_content[len(normalized_expected_content):]
+            if normalized_actual_content.startswith(normalized_expected_content)
+            else ""
+        )
+        _output(
+            {
+                "success": title_matches and content_matches,
+                "title_matches": title_matches,
+                "content_matches": content_matches,
+                "expected_content_chars": len(normalized_expected_content),
+                "actual_content_chars": len(normalized_actual_content),
+                "content_starts_with_expected": normalized_actual_content.startswith(normalized_expected_content),
+                "trailing_after_expected": trailing_after_expected,
+                "editor_diagnostics": editor_diagnostics,
+                "status": "发布页标题与正文已逐字核验"
+                if title_matches and content_matches
+                else "发布页文本与候选不一致，禁止点击发布",
+            },
+            exit_code=0 if title_matches and content_matches else 2,
+        )
     finally:
         browser.close()
 
@@ -941,6 +1065,30 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_argument("--unfavorite", action="store_true")
     sub.set_defaults(func=cmd_favorite_feed)
 
+    # follow-user
+    sub = subparsers.add_parser("follow-user", help="核验或关注用户（默认不执行）")
+    sub.add_argument("--user-id", required=True)
+    sub.add_argument("--xsec-token", required=True)
+    sub.add_argument("--execute", action="store_true", help="明确执行关注；缺省时只核验")
+    sub.set_defaults(func=cmd_follow_user)
+
+    # list-notifications
+    sub = subparsers.add_parser("list-notifications", help="只读获取已加载通知")
+    sub.add_argument("--limit", type=int, default=20)
+    sub.set_defaults(func=cmd_list_notifications)
+
+    # list-inbox
+    sub = subparsers.add_parser("list-inbox", help="只读获取已加载收件箱摘要")
+    sub.add_argument("--limit", type=int, default=20)
+    sub.set_defaults(func=cmd_list_inbox)
+
+    # send-message
+    sub = subparsers.add_parser("send-message", help="核验或发送私信（默认不执行）")
+    sub.add_argument("--recipient-profile-url", required=True)
+    sub.add_argument("--content-file", required=True)
+    sub.add_argument("--execute", action="store_true", help="明确执行发送；缺省时只核验")
+    sub.set_defaults(func=cmd_send_message)
+
     # publish
     sub = subparsers.add_parser("publish", help="发布图文")
     sub.add_argument("--title-file", required=True)
@@ -986,6 +1134,12 @@ def build_parser() -> argparse.ArgumentParser:
     # click-publish
     sub = subparsers.add_parser("click-publish", help="点击发布按钮")
     sub.set_defaults(func=cmd_click_publish)
+
+    # verify-publish-form
+    sub = subparsers.add_parser("verify-publish-form", help="只读逐字核验当前发布页标题和正文")
+    sub.add_argument("--title-file", required=True)
+    sub.add_argument("--content-file", required=True)
+    sub.set_defaults(func=cmd_verify_publish_form)
 
     # save-draft
     sub = subparsers.add_parser("save-draft", help="保存为草稿")

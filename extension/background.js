@@ -1076,7 +1076,21 @@ function domExecutor(method, params) {
             await sleep(30);
           }
         }
-        resolve(null);
+        // Quill 等编辑器可能吞掉 execCommand；回传实际 DOM 文本，让调用方验收。
+        // 若首轮写入为空，使用 DOM 写入 + input/change 作为一次本地兜底，仍由调用方逐字校验。
+        let actual = el.innerText || el.textContent || "";
+        if (!actual && params.text) {
+          el.textContent = params.text;
+          el.dispatchEvent(new InputEvent("input", {
+            bubbles: true,
+            inputType: "insertText",
+            data: params.text,
+          }));
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+          await sleep(80);
+          actual = el.innerText || el.textContent || "";
+        }
+        resolve({ text: actual });
       });
     }
 

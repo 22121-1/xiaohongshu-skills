@@ -39,8 +39,9 @@ metadata:
 1. **认证相关**（"登录 / 检查登录 / 切换账号"）→ 执行 `xhs-auth` 技能。
 2. **内容发布**（"发布 / 发帖 / 上传图文 / 上传视频"）→ 执行 `xhs-publish` 技能。
 3. **搜索发现**（"搜索笔记 / 查看详情 / 浏览首页 / 查看用户"）→ 执行 `xhs-explore` 技能。
-4. **社交互动**（"评论 / 回复 / 点赞 / 收藏"）→ 执行 `xhs-interact` 技能。
-5. **复合运营**（"竞品分析 / 热点追踪 / 批量互动 / 一键创作"）→ 执行 `xhs-content-ops` 技能。
+4. **社交互动**（"评论 / 回复 / 点赞 / 收藏 / 关注"）→ 执行 `xhs-interact` 技能。
+5. **消息与通知**（"收件箱 / 私信 / 点赞通知"）→ 使用 CLI 的只读消息命令；私信仅在获得逐条发送授权后，显式传入 `--execute`。
+6. **复合运营**（"竞品分析 / 热点追踪 / 批量互动 / 一键创作"）→ 执行 `xhs-content-ops` 技能。
 
 ## 全局约束
 
@@ -95,6 +96,10 @@ metadata:
 | `cli.py reply-comment` | 回复指定评论 |
 | `cli.py like-feed` | 点赞 / 取消点赞 |
 | `cli.py favorite-feed` | 收藏 / 取消收藏 |
+| `cli.py follow-user` | 核验或关注用户；默认只核验，需 `--execute` 才会关注 |
+| `cli.py list-notifications` | 只读获取已加载通知，不标记已读 |
+| `cli.py list-inbox` | 只读获取已加载会话摘要，不打开或标记会话 |
+| `cli.py send-message` | 核验或发送私信；正文从文件读取，需 `--execute` 才会发送 |
 
 ### xhs-content-ops — 复合运营
 

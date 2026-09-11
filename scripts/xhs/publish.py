@@ -669,6 +669,10 @@ def _input_tags(page: Page, content_selector: str, tags: list[str]) -> None:
     for tag in tags:
         tag = tag.lstrip("#")
         _input_single_tag(page, content_selector, tag)
+        # 无论联想是否被选中，均先插入空格再输入下一个话题。
+        # 小红书会把相邻的 # 话题拼成普通文本，导致后续话题不被识别。
+        page.type_text(" ", delay_ms=0)
+        time.sleep(0.3)
 
     # 输入完所有 tags 后，回到正文最后一段（tags 输入前的最后一段）末尾，按下回车
     # 用 para_count_before 精确定位，避免 tags 输入后 Quill 自动新增空段导致偏移

@@ -37,6 +37,7 @@ metadata:
 | `reply-comment` | 回复指定评论或用户 |
 | `like-feed` | 点赞 / 取消点赞 |
 | `favorite-feed` | 收藏 / 取消收藏 |
+| `follow-user` | 核验或关注用户（必须显式传入 `--execute` 才会执行） |
 
 ---
 

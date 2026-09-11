@@ -148,7 +148,33 @@ class BridgePage:
         self._call("input_text", {"selector": selector, "text": text})
 
     def input_content_editable(self, selector: str, text: str) -> None:
-        self._call("input_content_editable", {"selector": selector, "text": text})
+        result = self._call("input_content_editable", {"selector": selector, "text": text})
+        actual = result.get("text") if isinstance(result, dict) else None
+        normalize = lambda value: "".join(
+            char for char in (value or "")
+            if not char.isspace() and char not in {"\u200b", "\ufeff"}
+        )
+        if actual is not None and normalize(actual) == normalize(text):
+            return
+
+        # Some editor builds discard DOM-originated text mutations. Focus and
+        # clear the same field, then use the debugger-backed typing route and
+        # validate the rendered value before permitting a publish click.
+        selector_json = json.dumps(selector, ensure_ascii=False)
+        self.evaluate(
+            """(() => {
+                const el = document.querySelector(%s);
+                if (!el) throw new Error('content editor not found');
+                el.focus();
+                document.execCommand('selectAll', false, null);
+                document.execCommand('delete', false, null);
+            })()"""
+            % selector_json
+        )
+        self.type_text(text, delay_ms=20)
+        actual = self.get_element_text(selector)
+        if actual is None or normalize(actual) != normalize(text):
+            raise RuntimeError("正文写入后读回不一致，已停止填表")
 
     def get_element_text(self, selector: str) -> str | None:
         return self._call("get_element_text", {"selector": selector})
