@@ -653,6 +653,43 @@ def _read_publish_editor(page, content_selector: str) -> str:
     ) or ""
 
 
+def _read_publish_topic_entities(page, content_selector: str) -> list[str]:
+    """读取编辑器内已被小红书识别的话题实体。
+
+    单纯出现 ``#话题`` 的文本不是话题。这里仅接受带有话题/标签语义属性、
+    话题链接或不可编辑话题节点的元素；宁可误拦截，也不能把裸文本放行。
+    """
+    result = page.evaluate(
+        f"""(() => {{
+            const editor = document.querySelector({json.dumps(content_selector)});
+            if (!editor) return [];
+            const seen = new Set();
+            const topics = [];
+            for (const node of editor.querySelectorAll('*')) {{
+                const text = (node.innerText || node.textContent || '').trim().replace(/\\s+/g, '');
+                if (!text.startsWith('#') || text.length === 1) continue;
+                const className = typeof node.className === 'string' ? node.className : '';
+                const href = node.getAttribute('href') || '';
+                const semantic =
+                    node.hasAttribute('data-topic-id') ||
+                    node.hasAttribute('data-topic') ||
+                    node.hasAttribute('data-tag-id') ||
+                    (node.tagName === 'A' && /topic|tag|hashtag/i.test(href)) ||
+                    /topic|tag/i.test(className) ||
+                    node.getAttribute('contenteditable') === 'false';
+                if (!semantic) continue;
+                const tag = text.slice(1);
+                if (!seen.has(tag)) {{
+                    seen.add(tag);
+                    topics.push(tag);
+                }}
+            }}
+            return topics;
+        }})()"""
+    )
+    return [str(tag) for tag in result] if isinstance(result, list) else []
+
+
 def cmd_verify_publish_form(args: argparse.Namespace) -> None:
     """只读核验当前发布表单；任一字段不符即禁止点击发布。"""
     from xhs.publish import _find_content_element
@@ -673,18 +710,15 @@ def cmd_verify_publish_form(args: argparse.Namespace) -> None:
         normalized_expected = _normalize_publish_text(expected_content)
 
         # 话题由填表流程追加在正文后。正文必须以候选正文开头，剩余部分只
-        # 能是期望话题；每个话题后必须有空白分隔，避免 "#A#B" 被当成普通文字。
+        # 能是期望话题。除此之外，必须从 DOM 读到平台生成的话题实体；裸
+        # "#话题" 文本即使有空格分隔也绝不放行。
         normalized_topic_tail = "".join(f"#{tag}" for tag in expected_tags)
         body_matches = (
             normalized_actual.startswith(normalized_expected)
             and normalized_actual[len(normalized_expected):] == normalized_topic_tail
         )
-        raw_tail = actual_content
-        topic_spacing_matches = all(
-            (f"#{tag} " in raw_tail) or raw_tail.rstrip().endswith(f"#{tag}")
-            for tag in expected_tags
-        )
-        topic_matches = bool(expected_tags) is False or topic_spacing_matches
+        recognized_topic_entities = _read_publish_topic_entities(page, content_selector)
+        topic_matches = recognized_topic_entities == expected_tags
         cover_count = page.get_elements_count(IMAGE_PREVIEW)
         cover_matches = cover_count == args.expected_image_count and cover_count > 0
         title_matches = actual_title == expected_title
@@ -695,7 +729,9 @@ def cmd_verify_publish_form(args: argparse.Namespace) -> None:
                 "title_matches": title_matches,
                 "content_matches": body_matches,
                 "topics_match_and_separated": topic_matches,
+                "topics_recognized_as_entities": topic_matches,
                 "expected_tags": expected_tags,
+                "recognized_topic_entities": recognized_topic_entities,
                 "cover_preview_count": cover_count,
                 "expected_image_count": args.expected_image_count,
                 "cover_count_matches": cover_matches,

@@ -752,8 +752,9 @@ def _input_tags(page: Page, content_selector: str, tags: list[str]) -> None:
     for tag in tags:
         tag = tag.lstrip("#")
         _input_single_tag(page, content_selector, tag)
-        # 话题相邻时小红书会把后一个 # 当普通正文。无论联想是否命中，
-        # 都补一个分隔空格，确保下一个话题能被单独识别。
+        # 话题相邻时小红书会把后一个 # 当普通正文。只有已点击联想项后才
+        # 补分隔空格；联想失败会在 _input_single_tag 中直接中止，绝不把裸
+        # ``#话题`` 当作可发布的兜底文本。
         page.type_text(" ", delay_ms=0)
         time.sleep(0.3)
 
@@ -807,9 +808,10 @@ def _input_single_tag(page: Page, content_selector: str, tag: str) -> None:
                 break
 
     if not clicked:
-        # 没有联想，直接空格
-        logger.warning("未找到标签联想，直接输入空格: %s", tag)
-        page.type_text(" ", delay_ms=0)
+        raise PublishError(
+            f"未找到话题联想，已停止填写：#{tag}。"
+            "为避免发布成普通正文，请重新填写或更换可识别话题。"
+        )
 
     time.sleep(0.8)
 
