@@ -1085,7 +1085,21 @@ function domExecutor(method, params) {
             await sleep(30);
           }
         }
-        resolve(null);
+        // Quill/Tiptap 可能吞掉 execCommand。把实际 DOM 文本回传给 CLI，
+        // 由调用端决定是否允许后续发布。
+        let actual = el.innerText || el.textContent || "";
+        if (!actual && params.text) {
+          el.textContent = params.text;
+          el.dispatchEvent(new InputEvent("input", {
+            bubbles: true,
+            inputType: "insertText",
+            data: params.text,
+          }));
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+          await sleep(80);
+          actual = el.innerText || el.textContent || "";
+        }
+        resolve({ text: actual });
       });
     }
 

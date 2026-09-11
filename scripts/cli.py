@@ -625,6 +625,91 @@ def cmd_click_publish(args: argparse.Namespace) -> None:
         browser.close()
 
 
+def _normalize_publish_text(text: str | None) -> str:
+    """发布表单逐字核验时忽略排版空白和零宽字符，不忽略正文内容。"""
+    return "".join(
+        char for char in (text or "")
+        if not char.isspace() and char not in {"\u200b", "\ufeff"}
+    )
+
+
+def _read_publish_editor(page, content_selector: str) -> str:
+    """兼容 Quill 与 Tiptap/ProseMirror 的可见正文读回。"""
+    actual = page.get_element_text(content_selector) or ""
+    if actual:
+        return actual
+    return page.evaluate(
+        """(() => {
+            const editors = Array.from(document.querySelectorAll(
+                "div.tiptap.ProseMirror[contenteditable='true'], " +
+                "[role='textbox'][contenteditable='true'], " +
+                ".ProseMirror[contenteditable='true']"
+            ));
+            const editor = editors.find((el) =>
+                !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+            );
+            return editor ? (editor.innerText || editor.textContent || "") : "";
+        })()"""
+    ) or ""
+
+
+def cmd_verify_publish_form(args: argparse.Namespace) -> None:
+    """只读核验当前发布表单；任一字段不符即禁止点击发布。"""
+    from xhs.publish import _find_content_element
+    from xhs.selectors import IMAGE_PREVIEW, TITLE_INPUT
+
+    with open(args.title_file, encoding="utf-8") as f:
+        expected_title = f.read().strip()
+    with open(args.content_file, encoding="utf-8") as f:
+        expected_content = f.read().strip()
+    expected_tags = [tag.lstrip("#").strip() for tag in (args.tags or []) if tag.lstrip("#").strip()]
+
+    browser, page = _connect_existing(args)
+    try:
+        content_selector = _find_content_element(page)
+        actual_title = page.get_element_attribute(TITLE_INPUT, "value") or ""
+        actual_content = _read_publish_editor(page, content_selector)
+        normalized_actual = _normalize_publish_text(actual_content)
+        normalized_expected = _normalize_publish_text(expected_content)
+
+        # 话题由填表流程追加在正文后。正文必须以候选正文开头，剩余部分只
+        # 能是期望话题；每个话题后必须有空白分隔，避免 "#A#B" 被当成普通文字。
+        normalized_topic_tail = "".join(f"#{tag}" for tag in expected_tags)
+        body_matches = (
+            normalized_actual.startswith(normalized_expected)
+            and normalized_actual[len(normalized_expected):] == normalized_topic_tail
+        )
+        raw_tail = actual_content
+        topic_spacing_matches = all(
+            (f"#{tag} " in raw_tail) or raw_tail.rstrip().endswith(f"#{tag}")
+            for tag in expected_tags
+        )
+        topic_matches = bool(expected_tags) is False or topic_spacing_matches
+        cover_count = page.get_elements_count(IMAGE_PREVIEW)
+        cover_matches = cover_count == args.expected_image_count and cover_count > 0
+        title_matches = actual_title == expected_title
+        success = title_matches and body_matches and topic_matches and cover_matches
+        _output(
+            {
+                "success": success,
+                "title_matches": title_matches,
+                "content_matches": body_matches,
+                "topics_match_and_separated": topic_matches,
+                "expected_tags": expected_tags,
+                "cover_preview_count": cover_count,
+                "expected_image_count": args.expected_image_count,
+                "cover_count_matches": cover_matches,
+                "cover_verification_scope": "核验已上传预览数量；网页不提供原始文件哈希，不能逐像素比对封面",
+                "status": "发布页标题、正文、话题和封面预览已核验"
+                if success
+                else "发布页与候选不一致，禁止点击发布",
+            },
+            exit_code=0 if success else 2,
+        )
+    finally:
+        browser.close()
+
+
 def cmd_save_draft(args: argparse.Namespace) -> None:
     """保存为草稿。"""
     from xhs.publish import save_as_draft
@@ -1052,6 +1137,14 @@ def build_parser() -> argparse.ArgumentParser:
     # click-publish
     sub = subparsers.add_parser("click-publish", help="点击发布按钮")
     sub.set_defaults(func=cmd_click_publish)
+
+    # verify-publish-form
+    sub = subparsers.add_parser("verify-publish-form", help="只读核验发布页标题、正文、话题和封面预览")
+    sub.add_argument("--title-file", required=True)
+    sub.add_argument("--content-file", required=True)
+    sub.add_argument("--tags", nargs="*")
+    sub.add_argument("--expected-image-count", type=int, default=1)
+    sub.set_defaults(func=cmd_verify_publish_form)
 
     # save-draft
     sub = subparsers.add_parser("save-draft", help="保存为草稿")

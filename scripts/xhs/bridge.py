@@ -148,7 +148,34 @@ class BridgePage:
         self._call("input_text", {"selector": selector, "text": text})
 
     def input_content_editable(self, selector: str, text: str) -> None:
-        self._call("input_content_editable", {"selector": selector, "text": text})
+        result = self._call("input_content_editable", {"selector": selector, "text": text})
+        actual = result.get("text") if isinstance(result, dict) else None
+
+        def normalize(value: str | None) -> str:
+            return "".join(
+                char for char in (value or "")
+                if not char.isspace() and char not in {"\u200b", "\ufeff"}
+            )
+
+        if actual is not None and normalize(actual) == normalize(text):
+            return
+
+        # 某些编辑器会丢弃 DOM 写入。仅在首次读回不一致时，清空同一字段，
+        # 再走 debugger 的真实输入路径；二次读回仍不一致则停止填表。
+        selector_json = json.dumps(selector, ensure_ascii=False)
+        self.evaluate(
+            """(() => {
+                const el = document.querySelector(%s);
+                if (!el) throw new Error('content editor not found');
+                el.focus();
+                document.execCommand('selectAll', false, null);
+                document.execCommand('delete', false, null);
+            })()""" % selector_json
+        )
+        self.type_text(text, delay_ms=20)
+        actual = self.get_element_text(selector)
+        if actual is None or normalize(actual) != normalize(text):
+            raise RuntimeError("正文写入后读回不一致，已停止填表")
 
     def get_element_text(self, selector: str) -> str | None:
         return self._call("get_element_text", {"selector": selector})

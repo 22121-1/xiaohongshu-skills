@@ -752,6 +752,10 @@ def _input_tags(page: Page, content_selector: str, tags: list[str]) -> None:
     for tag in tags:
         tag = tag.lstrip("#")
         _input_single_tag(page, content_selector, tag)
+        # 话题相邻时小红书会把后一个 # 当普通正文。无论联想是否命中，
+        # 都补一个分隔空格，确保下一个话题能被单独识别。
+        page.type_text(" ", delay_ms=0)
+        time.sleep(0.3)
 
     # 输入完所有 tags 后，回到正文最后一段（tags 输入前的最后一段）末尾，按下回车
     # 用 para_count_before 精确定位，避免 tags 输入后 Quill 自动新增空段导致偏移
