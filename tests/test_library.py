@@ -140,14 +140,15 @@ process.stdout.write(result);
 """
 
 
-def run_js(user, scope="notes", profile=ACCOUNT):
+def run_js(user, scope="notes", profile=ACCOUNT, action="read"):
     executable = shutil.which("node")
     if not executable:
         pytest.skip("Node.js unavailable")
     result = subprocess.run(
         [executable, "-e", _NODE_RUNNER],
         input=json.dumps({"script": library._SCRIPT, "user": user, "profile": profile,
-                          "params": {"action": "read", "scope": scope, "account_id": ACCOUNT}}),
+                          "params": {"action": action, "scope": scope,
+                                     "account_id": ACCOUNT}}),
         text=True, capture_output=True, check=True,
     )
     return json.loads(result.stdout)
@@ -202,3 +203,40 @@ def test_actual_javascript_empty_loading_is_not_success():
     user["userNoteFetchingStatus"]["0"] = "pending"
     user["noteQueries"]["0"]["hasMore"] = True
     assert run_js(user) == {"ready": False}
+
+
+def test_profile_stats_return_aggregate_counts_without_identity(monkeypatch):
+    page = Mock()
+    monkeypatch.setattr(library, "_run", Mock(return_value={
+        "ready": True, "account_id": ACCOUNT, "nickname": "不应输出",
+    }))
+    monkeypatch.setattr(library, "_wait", Mock(return_value={
+        "ready": True,
+        "metrics": [{"type": "fans", "name": "粉丝", "count": "12"}],
+        "source": "personal_web_profile",
+    }))
+    result = library.get_my_profile_stats(page)
+    assert result == {
+        "success": True,
+        "metrics": [{"type": "fans", "name": "粉丝", "count": "12"}],
+        "source": "personal_web_profile",
+        "privacy_scope": "aggregate_counts_only",
+    }
+    page.navigate.assert_called_once_with(
+        f"https://www.xiaohongshu.com/user/profile/{ACCOUNT}",
+    )
+
+
+def test_actual_javascript_profile_stats_are_aggregate_only():
+    user = state_user()
+    user["userInfo"]["_value"]["nickname"] = "不应输出"
+    user["userPageData"] = {"value": {
+        "basicInfo": {"nickname": "不应输出", "redId": "secret"},
+        "interactions": [{"type": "fans", "name": "粉丝", "count": "12"}],
+    }}
+    result = run_js(user, action="stats")
+    assert result == {
+        "ready": True,
+        "metrics": [{"type": "fans", "name": "粉丝", "count": "12"}],
+        "source": "personal_web_profile",
+    }

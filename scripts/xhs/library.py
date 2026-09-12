@@ -53,6 +53,28 @@ def _open_own(page, scope: str, timeout: float) -> dict:
     return _wait(page, "read", "ready", timeout=timeout, **params)
 
 
+def get_my_profile_stats(page, *, timeout: float = 12) -> dict:
+    """读取当前账号主页的公开聚合计数，不返回账号身份或页面访问参数。"""
+    if not 0 <= timeout <= 60:
+        raise ValueError("timeout 应为 0–60 秒")
+    account = _run(page, "account")
+    if not account.get("ready"):
+        page.navigate("https://www.xiaohongshu.com/explore")
+        page.wait_for_load()
+        account = _wait(page, "account", "ready", timeout=timeout)
+    page.navigate(f"https://www.xiaohongshu.com/user/profile/{account['account_id']}")
+    page.wait_for_load()
+    result = _wait(
+        page, "stats", "ready", timeout=timeout, account_id=account["account_id"],
+    )
+    return {
+        "success": True,
+        "metrics": result["metrics"],
+        "source": result["source"],
+        "privacy_scope": "aggregate_counts_only",
+    }
+
+
 def _record_key(record: dict, scope: str) -> str:
     if scope != "collections":
         return record["id"]

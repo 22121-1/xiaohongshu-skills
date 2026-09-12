@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from xhs.library import list_library, search_library
+from xhs.library import get_my_profile_stats, list_library, search_library
 
 
 def register(subparsers, connect, output):
@@ -27,6 +27,14 @@ def register(subparsers, connect, output):
             browser.close()
         output(result)
 
+    def profile_stats(args):
+        browser, page = connect(args)
+        try:
+            result = get_my_profile_stats(page)
+        finally:
+            browser.close()
+        output(result)
+
     def bounds(command):
         command.add_argument("--limit", type=int, default=50, help="每个范围最多读取条数，1–500")
         command.add_argument("--max-pages", type=int, default=3, help="最多读取轮数，1–20")
@@ -46,3 +54,8 @@ def register(subparsers, connect, output):
     command.add_argument("--keyword", required=True)
     command.add_argument("--scope", choices=["notes", "favorites", "all"], default="all")
     command.set_defaults(func=search)
+
+    command = subparsers.add_parser(
+        "get-my-profile-stats", help="只读获取当前账号的关注、粉丝等公开聚合计数",
+    )
+    command.set_defaults(func=profile_stats)

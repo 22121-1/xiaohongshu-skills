@@ -39,6 +39,18 @@
         (params.account_id && params.account_id !== accountId)) {
         return done({error: '当前页面或登录账号与个人内容库目标不一致'});
     }
+    if (params.action === 'stats') {
+        const pageData = unwrap(user.userPageData);
+        const interactions = list(pageData?.interactions);
+        if (interactions === null) return done({ready: false});
+        const metrics = interactions.map(item => ({
+            type: String(item?.type || ''),
+            name: String(item?.name || ''),
+            count: String(item?.count ?? ''),
+        })).filter(item => item.name && item.count !== '');
+        if (!metrics.length) return done({ready: false});
+        return done({ready: true, metrics, source: 'personal_web_profile'});
+    }
     if (!['notes', 'favorites', 'collections'].includes(params.scope)) {
         return done({error: '未知个人内容库范围'});
     }

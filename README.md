@@ -176,6 +176,7 @@ python scripts/cli.py send-direct-message \
 | 子命令 | 说明 |
 |--------|------|
 | `check-login` | 检查登录状态，返回用户昵称和小红书号 |
+| `get-my-profile-stats` | 只读获取当前账号的关注、粉丝等公开聚合计数 |
 | `login` | 获取登录二维码，等待扫码，登录后返回用户信息 |
 | `delete-cookies` | 清除 cookies（退出登录） |
 | `list-feeds` | 获取首页推荐 Feed |

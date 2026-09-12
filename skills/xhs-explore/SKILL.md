@@ -40,6 +40,7 @@ metadata:
 | `get-feed-detail` | 获取笔记完整内容和评论 |
 | `user-profile` | 获取用户主页信息 |
 | `list-my-notes` | 读取自己的主页笔记 |
+| `get-my-profile-stats` | 只读获取当前账号的关注、粉丝等公开聚合计数 |
 | `list-favorites` | 读取收藏笔记 |
 | `list-collections` | 读取网页专辑 |
 | `search-library` | 检索个人笔记与收藏的标题作者 |
@@ -53,7 +54,7 @@ metadata:
 
 ## 个人内容库、链接与导出
 
-自己的主页笔记、收藏、网页专辑分别用 `list-my-notes`、`list-favorites`、`list-collections`。`search-library` 检索标题和作者，不是全文检索；网页专辑不等于 App 全部收藏夹。
+自己的主页聚合计数使用 `get-my-profile-stats`，只返回关注、粉丝等计数，不返回账号身份或页面访问参数。主页笔记、收藏、网页专辑分别用 `list-my-notes`、`list-favorites`、`list-collections`。`search-library` 检索标题和作者，不是全文检索；网页专辑不等于 App 全部收藏夹。
 
 `get-share-url` 生成链接，`resolve-link` 解析长短链接或分享文案；生成链接不证明访问权限有效。`export-note` 读取并导出笔记，`export-content` 导出已有 JSON；输出使用绝对路径，已有文件默认不覆盖，媒体只记录地址。
 
