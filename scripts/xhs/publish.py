@@ -819,7 +819,10 @@ def _input_single_tag(page: Page, content_selector: str, tag: str) -> None:
         if page.has_element(TAG_TOPIC_CONTAINER):
             item_selector = f"{TAG_TOPIC_CONTAINER} {TAG_FIRST_ITEM}"
             if page.has_element(item_selector):
-                page.click_element(item_selector)
+                # 话题联想必须走 debugger 的真实鼠标事件。DOM ``click()`` 会让
+                # 面板视觉上消失，却可能只留下裸 ``#话题`` 文本，平台不会把
+                # 它识别成话题实体。
+                page.click_element_by_text(item_selector, tag)
                 logger.info("点击标签联想: %s", tag)
                 clicked = True
                 break

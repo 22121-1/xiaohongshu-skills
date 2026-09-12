@@ -703,7 +703,19 @@ def _read_publish_topic_entities(page, content_selector: str) -> list[str]:
             return topics;
         }})()"""
     )
-    return [str(tag) for tag in result] if isinstance(result, list) else []
+    topics = [str(tag) for tag in result] if isinstance(result, list) else []
+    if topics:
+        return topics
+
+    # 当前创作编辑器有时不再给话题节点保留稳定的 class/data 属性，但会把
+    # 通过联想面板选中的实体序列化为 ``#名称[话题]#``。裸 ``#名称`` 文本
+    # 不会产生这个平台标记，因此可以作为严格且不会放行纯文本话题的兜底。
+    editor_text = _read_publish_editor(page, content_selector)
+    return [
+        match.strip()
+        for match in re.findall(r"#([^#\[\]]+)\[话题\]#", editor_text or "")
+        if match.strip()
+    ]
 
 
 def cmd_verify_publish_form(args: argparse.Namespace) -> None:

@@ -104,6 +104,28 @@ class PublishReadbackTests(unittest.TestCase):
             self.assertFalse(captured[0][0]["topics_recognized_as_entities"])
             self.assertEqual(captured[0][1], 2)
 
+    def test_topic_reader_accepts_platform_marker_without_stable_dom_attributes(self) -> None:
+        page = Mock()
+        page.evaluate.return_value = []
+        with patch(
+            "cli._read_publish_editor",
+            return_value="#话题A[话题]# #话题B[话题]#",
+        ):
+            self.assertEqual(
+                cli._read_publish_topic_entities(page, ".editor"),
+                ["话题A", "话题B"],
+            )
+
+    def test_single_topic_uses_real_debugger_click(self) -> None:
+        page = Mock()
+        page.has_element.return_value = True
+        with patch("xhs.publish.time.sleep"), patch(
+            "xhs.publish.random.uniform", return_value=0
+        ):
+            publish._input_single_tag(page, ".editor", "微恐故事")
+        page.click_element_by_text.assert_called_once()
+        page.click_element.assert_not_called()
+
     def test_input_tags_inserts_space_after_every_topic(self) -> None:
         page = Mock()
         page.evaluate.return_value = 1
