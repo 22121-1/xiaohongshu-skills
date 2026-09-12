@@ -16,11 +16,36 @@ from xhs.bridge import BridgePage
 
 
 class PublishReadbackTests(unittest.TestCase):
+    def test_find_content_editor_uses_visible_unique_marker(self) -> None:
+        page = Mock()
+        page.evaluate.return_value = "[data-xhs-cli-content-editor='true']"
+        self.assertEqual(
+            publish._find_content_element(page),
+            "[data-xhs-cli-content-editor='true']",
+        )
+        expression = page.evaluate.call_args.args[0]
+        self.assertIn("getBoundingClientRect", expression)
+        self.assertIn("contenteditable='true'", expression)
+
+    def test_find_content_editor_rejects_hidden_only_dom(self) -> None:
+        page = Mock()
+        page.evaluate.return_value = ""
+        with self.assertRaises(publish.PublishError):
+            publish._find_content_element(page)
+
     def test_tiptap_fallback_reads_visible_editor(self) -> None:
         page = Mock()
         page.get_element_text.return_value = ""
         page.evaluate.return_value = "Tiptap 正文"
         self.assertEqual(cli._read_publish_editor(page, "div.ql-editor"), "Tiptap 正文")
+
+    def test_normalize_platform_topic_entity_text(self) -> None:
+        self.assertEqual(
+            cli._normalize_publish_editor_text(
+                "测试正文\n#话题A[话题]# #话题B[话题]# "
+            ),
+            "测试正文#话题A#话题B",
+        )
 
     def test_verify_requires_platform_topic_entities(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -40,7 +65,10 @@ class PublishReadbackTests(unittest.TestCase):
                 bridge_url="ws://unused",
             )
             with patch("cli._connect_existing", return_value=(Mock(), page)), \
-                 patch("cli._read_publish_editor", return_value="测试正文\n#话题A #话题B "), \
+                 patch(
+                     "cli._read_publish_editor",
+                     return_value="测试正文\n#话题A[话题]# #话题B[话题]# ",
+                 ), \
                  patch("cli._read_publish_topic_entities", return_value=["话题A", "话题B"]), \
                  patch("xhs.publish._find_content_element", return_value=".editor"), \
                  patch("cli._output", side_effect=lambda data, exit_code=0: captured.append((data, exit_code))):

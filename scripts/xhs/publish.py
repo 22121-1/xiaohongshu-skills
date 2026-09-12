@@ -19,7 +19,6 @@ from .errors import (
     UploadTimeoutError,
 )
 from .selectors import (
-    CONTENT_EDITOR,
     CONTENT_LENGTH_ERROR,
     CREATOR_TAB,
     DATETIME_INPUT,
@@ -663,34 +662,52 @@ def _fill_publish_form(
 
 
 def _find_content_element(page: Page) -> str:
-    """查找内容输入框（兼容两种 UI）。"""
-    if page.has_element(CONTENT_EDITOR):
-        return CONTENT_EDITOR
+    """查找当前可见的正文编辑器，并返回唯一选择器。
 
-    # 查找带 placeholder 的 p 元素的 textbox 父元素
-    found = page.evaluate(
+    创作页切换过编辑器实现后，隐藏的旧 ``.ql-editor`` 仍可能留在 DOM 中。
+    只按 ``querySelector`` 命中第一个节点会把正文写进屏外旧编辑器，造成封面、
+    标题正确而可见正文为空。这里为可见且可编辑的最佳候选加临时属性，确保
+    填写、话题选择和最终读回始终操作同一个节点。
+    """
+    selector = page.evaluate(
         """
         (() => {
-            const ps = document.querySelectorAll('p');
-            for (const p of ps) {
-                const placeholder = p.getAttribute('data-placeholder');
-                if (placeholder && placeholder.includes('输入正文描述')) {
-                    let current = p;
-                    for (let i = 0; i < 5; i++) {
-                        current = current.parentElement;
-                        if (!current) break;
-                        if (current.getAttribute('role') === 'textbox') {
-                            return 'found';
-                        }
-                    }
-                }
+            const marker = 'data-xhs-cli-content-editor';
+            for (const old of document.querySelectorAll(`[${marker}]`)) {
+                old.removeAttribute(marker);
             }
-            return '';
+            const visible = (el) => {
+                const rect = el.getBoundingClientRect();
+                if (rect.width <= 0 || rect.height <= 0) return false;
+                const style = window.getComputedStyle(el);
+                return style.display !== 'none' && style.visibility !== 'hidden' &&
+                    style.opacity !== '0';
+            };
+            const candidates = Array.from(document.querySelectorAll(
+                "div.ql-editor[contenteditable='true'], " +
+                "div.tiptap.ProseMirror[contenteditable='true'], " +
+                ".ProseMirror[contenteditable='true'], " +
+                "[role='textbox'][contenteditable='true']"
+            )).filter(visible);
+            const score = (el) => {
+                let value = 0;
+                const classes = typeof el.className === 'string' ? el.className : '';
+                if (/tiptap|ProseMirror|ql-editor/.test(classes)) value += 4;
+                if (el.getAttribute('role') === 'textbox') value += 2;
+                if (el.matches('div.edit-container *')) value += 4;
+                if (el.querySelector('[data-placeholder*="输入正文描述"]')) value += 8;
+                return value;
+            };
+            candidates.sort((a, b) => score(b) - score(a));
+            const editor = candidates[0];
+            if (!editor) return '';
+            editor.setAttribute(marker, 'true');
+            return `[${marker}='true']`;
         })()
         """
     )
-    if found == "found":
-        return "[role='textbox']"
+    if isinstance(selector, str) and selector:
+        return selector
 
     raise PublishError("没有找到内容输入框")
 

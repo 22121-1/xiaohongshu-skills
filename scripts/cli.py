@@ -13,6 +13,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 
 # Windows 控制台默认编码（如 cp1252）不支持中文，强制 UTF-8
@@ -633,6 +634,17 @@ def _normalize_publish_text(text: str | None) -> str:
     )
 
 
+def _normalize_publish_editor_text(text: str | None) -> str:
+    """把平台话题实体的辅助标记折叠为候选中的 ``#话题`` 文本。
+
+    小红书当前编辑器会把已识别实体读成 ``#名称[话题]#``；其中
+    ``[话题]#`` 是平台语义标记，不是用户正文。正文仍需逐字匹配，只有这种
+    已知实体包装会被规范化。
+    """
+    compact = _normalize_publish_text(text)
+    return re.sub(r"#([^#\[\]]+)\[话题\]#", r"#\1", compact)
+
+
 def _read_publish_editor(page, content_selector: str) -> str:
     """兼容 Quill 与 Tiptap/ProseMirror 的可见正文读回。"""
     actual = page.get_element_text(content_selector) or ""
@@ -678,7 +690,11 @@ def _read_publish_topic_entities(page, content_selector: str) -> list[str]:
                     /topic|tag/i.test(className) ||
                     node.getAttribute('contenteditable') === 'false';
                 if (!semantic) continue;
-                const tag = text.slice(1);
+                const tag = text
+                    .replace(/^#+/, '')
+                    .replace(/\\[话题\\]#+$/, '')
+                    .replace(/#+$/, '');
+                if (!tag) continue;
                 if (!seen.has(tag)) {{
                     seen.add(tag);
                     topics.push(tag);
@@ -706,7 +722,7 @@ def cmd_verify_publish_form(args: argparse.Namespace) -> None:
         content_selector = _find_content_element(page)
         actual_title = page.get_element_attribute(TITLE_INPUT, "value") or ""
         actual_content = _read_publish_editor(page, content_selector)
-        normalized_actual = _normalize_publish_text(actual_content)
+        normalized_actual = _normalize_publish_editor_text(actual_content)
         normalized_expected = _normalize_publish_text(expected_content)
 
         # 话题由填表流程追加在正文后。正文必须以候选正文开头，剩余部分只
